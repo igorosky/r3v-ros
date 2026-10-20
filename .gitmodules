@@ -1,0 +1,8 @@
+[submodule "r3v-voxelizer"]
+	path = r3v-voxelizer
+	url = https://github.com/igorosky/r3v-voxelizer.git
+	branch = master
+[submodule "r3v-renderer"]
+	path = r3v-renderer
+	url = https://github.com/igorosky/r3v-renderer.git
+	branch = master

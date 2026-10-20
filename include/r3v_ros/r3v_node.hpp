@@ -39,6 +39,7 @@ public:
 
 private:
   void declareParameters();
+  uint32_t declareU32(const std::string & name, int64_t fallback);
   void createVoxelizer();
   void createRenderer();
   void createInterfaces();
@@ -79,6 +80,7 @@ private:
   std::string camera_pose_topic_;
   std::vector<CloudConfig> cloud_configs_;
   double voxel_size_;
+  rv::Multipliers multipliers_;  // defaults of every point cloud
 
   // Declared first so they outlive every callback using them.
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;

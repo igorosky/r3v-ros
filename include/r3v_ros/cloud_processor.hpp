@@ -22,6 +22,7 @@ struct CloudConfig
   int decimation = 1;        // use every n-th point
   std::string intensity_field;  // empty = constant intensity_scale
   double intensity_scale = 1.0;
+  rv::Multipliers multipliers{1.0f, 1, 2};  // voxelizer multipliers for this cloud's points
 };
 
 // Reads the points of `cloud`, keeps finite ones between min_range and

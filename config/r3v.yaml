@@ -65,6 +65,7 @@
       # trunc(intensity * intensity_multiplier) * hit_multiplier from every
       # voxel its ray passes through. A voxel appears at construct_threshold
       # and disappears at destroy_threshold or below; values cap at max_value.
+      # The three multipliers are defaults, every point cloud can set its own.
       intensity_multiplier: 1.0
       hit_multiplier: 1
       target_multiplier: 2
@@ -92,6 +93,13 @@
         # intensity_scale.
         intensity_field: ""
         intensity_scale: 1.0
+        # Voxelizer multipliers for this cloud's points (see voxelizer);
+        # default to the voxelizer values.
+        # intensity_multiplier: 1.0
+        # hit_multiplier: 1
+        # target_multiplier: 2
       # depth_camera:
       #   topic: /camera/depth/points
       #   max_range: 5.0
+      #   # Noisier, so it builds voxels slower than the lidar.
+      #   target_multiplier: 1

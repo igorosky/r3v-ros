@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>r3v_ros</name>
+  <version>0.1.0</version>
+  <description>
+    Renders a robot (URDF + TF) and voxelized point clouds with r3v-renderer and
+    r3v-voxelizer, and publishes the result as a video stream (sensor_msgs/Image
+    through image_transport).
+  </description>
+  <maintainer email="igor.zaworski2@gmail.com">igorosky</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <build_depend>eigen</build_depend>
+
+  <depend>ament_index_cpp</depend>
+  <depend>assimp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>image_transport</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_eigen</depend>
+  <depend>tf2_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>urdf</depend>
+
+  <exec_depend>compressed_image_transport</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,97 @@
+# r3v_node configuration. Every key is optional; the values below are the
+# defaults unless noted. Use floats (1.0, not 1) for floating point values.
+# Lists cannot be empty in ROS parameter files: leave a list out instead.
+/**:
+  ros__parameters:
+    # Frame everything is rendered in (point clouds accumulate in it too).
+    fixed_frame: map
+    # Frames per second.
+    rate: 15.0
+    tf_topic: /tf
+    tf_static_topic: /tf_static
+    # How long a point cloud waits for its transform, in seconds.
+    tf_timeout: 0.1
+
+    robot_description:
+      # std_msgs/String, as published by robot_state_publisher.
+      topic: /robot_description
+      # Read the URDF from this file instead of the topic (not set by default).
+      file: ""
+      # Directories searched for package://<pkg>/<path> as <dir>/<pkg>/<path>
+      # before the installed packages. Useful to mount meshes into a container.
+      # package_paths: ["/robot"]
+      # Draw both sides of every mesh triangle (for meshes with bad winding).
+      double_sided: false
+
+    output:
+      # image_transport base topic: raw sensor_msgs/Image on it, plus
+      # <topic>/compressed etc. for every installed transport plugin.
+      topic: /r3v/image
+      width: 1280
+      height: 720
+      # bgr8, rgb8, bgra8 or rgba8.
+      encoding: bgr8
+      # Header frame_id of the images; empty means fixed_frame.
+      frame_id: ""
+      # Only render while someone subscribes.
+      lazy: true
+
+    camera:
+      # Frame position and target are given in; empty means fixed_frame.
+      # A moving frame (e.g. base_link) makes a camera following the robot.
+      frame: ""
+      position: [4.0, 4.0, 3.0]
+      target: [0.0, 0.0, 0.5]
+      # Vertical field of view, degrees.
+      fov_deg: 60.0
+      near: 0.05
+      far: 200.0
+      # geometry_msgs/PoseStamped moving the camera at runtime: it looks along
+      # the pose's +X axis with +Z up. Overrides position/target once received.
+      # Empty disables it.
+      pose_topic: "~/camera_pose"
+
+    voxelizer:
+      # single_threaded, multi_threaded or wgpu (GPU compute).
+      backend: multi_threaded
+      # multi_threaded worker threads, 0 = one per CPU.
+      threads: 0
+      # wgpu hashmap size, about 1 KiB of GPU memory each.
+      wgpu_bucket_count: 131072
+      # Voxel edge length in meters.
+      resolution: 0.1
+      # Every point adds trunc(intensity * intensity_multiplier) *
+      # target_multiplier to the voxel it hits and subtracts
+      # trunc(intensity * intensity_multiplier) * hit_multiplier from every
+      # voxel its ray passes through. A voxel appears at construct_threshold
+      # and disappears at destroy_threshold or below; values cap at max_value.
+      intensity_multiplier: 1.0
+      hit_multiplier: 1
+      target_multiplier: 2
+      destroy_threshold: 0
+      construct_threshold: 2
+      max_value: 10
+
+    point_clouds:
+      # Any number of sensor_msgs/PointCloud2 inputs, each configured under
+      # its name below. Leave names out for none (the default; lidar is an
+      # example).
+      names: [lidar]
+      lidar:
+        topic: /points
+        # sensor_data (best effort, works with any publisher) or reliable.
+        qos: sensor_data
+        # Frame rays start from; empty means the cloud's header frame.
+        sensor_frame: ""
+        # Points closer or farther from the sensor are ignored (meters).
+        min_range: 0.0
+        max_range: 30.0
+        # Use every n-th point.
+        decimation: 1
+        # Field scaling each point's weight; empty gives every point
+        # intensity_scale.
+        intensity_field: ""
+        intensity_scale: 1.0
+      # depth_camera:
+      #   topic: /camera/depth/points
+      #   max_range: 5.0

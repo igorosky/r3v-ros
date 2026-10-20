@@ -1,0 +1,30 @@
+# docker compose -f docker/compose.yaml up --build
+services:
+  r3v:
+    image: r3v-ros:${ROS_DISTRO:-jazzy}
+    build:
+      context: ..
+      args:
+        ROS_DISTRO: ${ROS_DISTRO:-jazzy}
+    # DDS discovery and shared memory transport with the host's ROS graph.
+    network_mode: host
+    ipc: host
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+    # Intel / AMD GPUs. Remove for NVIDIA (see below) or to render on the CPU.
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - ../config/r3v.yaml:/config/r3v.yaml:ro
+      # Meshes of robots whose packages are not installed in the image; list
+      # /robot in robot_description.package_paths.
+      # - /path/to/dir/holding/robot_description_packages:/robot:ro
+    restart: unless-stopped
+    # NVIDIA GPUs (needs the NVIDIA container toolkit):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu, graphics]

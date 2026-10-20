@@ -1,0 +1,7 @@
+.git
+**/.git
+**/target
+build
+install
+log
+.vscode

@@ -22,6 +22,10 @@
       # package_paths: ["/robot"]
       # Draw both sides of every mesh triangle (for meshes with bad winding).
       double_sided: false
+      # Links hidden at start, each together with every link below it in the
+      # URDF tree; ~/hidden_links (std_msgs/String, comma separated) replaces
+      # the list at runtime. None by default.
+      # hidden_links: ["arm_base_link"]
 
     output:
       # image_transport base topic: raw sensor_msgs/Image on it, plus
@@ -60,6 +64,10 @@
       wgpu_bucket_count: 131072
       # Voxel edge length in meters.
       resolution: 0.1
+      # Draw the voxel map; ~/voxels_visible (std_msgs/Bool) switches it at
+      # runtime, ~/clear_voxels (std_msgs/Empty) forgets it. Point clouds keep
+      # building the map while it is hidden.
+      visible: true
       # Every point adds trunc(intensity * intensity_multiplier) *
       # target_multiplier to the voxel it hits and subtracts
       # trunc(intensity * intensity_multiplier) * hit_multiplier from every

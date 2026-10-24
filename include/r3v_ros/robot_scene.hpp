@@ -36,10 +36,16 @@ public:
   void load(const std::string & urdf_xml, rr::R3vWgpuRenderer * renderer);
 
   // Poses every instance from the latest TF of its link in `fixed_frame`.
-  // Instances stay hidden until their link has a transform.
+  // Instances stay hidden until their link has a transform, and while their
+  // link is hidden by setHiddenLinks().
   void update(
     const tf2_ros::Buffer & tf, const std::string & fixed_frame,
     rr::R3vWgpuRenderer * renderer);
+
+  // Hides every link in `links` together with all links below it in the URDF
+  // tree; the others are shown again. Kept across load(). Takes effect at the
+  // next update().
+  void setHiddenLinks(const std::vector<std::string> & links);
 
 private:
   struct Instance
@@ -57,11 +63,18 @@ private:
   // NULL (warned about once) when it cannot be built.
   const Triangles * geometryTriangles(const urdf::Geometry & geometry, const std::string & key);
 
+  // Expands hidden_roots_ into hidden_ over children_.
+  void updateHidden();
+
   rclcpp::Logger logger_;
   rclcpp::Clock::SharedPtr clock_;
   MeshLoader loader_;
   bool double_sided_;
   std::vector<Instance> instances_;
+  std::unordered_map<std::string, std::vector<std::string>> children_;  // link -> child links
+  std::vector<std::string> hidden_roots_;
+  std::unordered_set<std::string> hidden_;  // hidden_roots_ and every link below them
+  std::unordered_set<std::string> unknown_hidden_;  // hidden links already warned about
   std::unordered_map<std::string, Triangles> cache_;
   std::unordered_set<std::string> failed_;  // geometry keys already warned about
 };

@@ -1,6 +1,7 @@
 #include "r3v_ros/r3v_node.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -52,6 +53,7 @@ R3vNode::R3vNode(const rclcpp::NodeOptions & options)
 
   robot_ = std::make_unique<RobotScene>(
     get_logger(), get_clock(), MeshLoader(package_paths_), double_sided_);
+  robot_->setHiddenLinks(hidden_links_);
   if (!robot_description_file_.empty()) {
     std::ifstream file(robot_description_file_);
     require(
@@ -87,6 +89,10 @@ void R3vNode::declareParameters()
   package_paths_.erase(
     std::remove(package_paths_.begin(), package_paths_.end(), ""), package_paths_.end());
   double_sided_ = declare_parameter<bool>("robot_description.double_sided", false);
+  hidden_links_ = declare_parameter<std::vector<std::string>>(
+    "robot_description.hidden_links", std::vector<std::string>{});
+  hidden_links_.erase(
+    std::remove(hidden_links_.begin(), hidden_links_.end(), ""), hidden_links_.end());
 
   output_topic_ = declare_parameter<std::string>("output.topic", "/r3v/image");
   const int64_t width = declare_parameter<int64_t>("output.width", 1280);
@@ -121,6 +127,7 @@ void R3vNode::declareParameters()
 
   voxel_size_ = declare_parameter<double>("voxelizer.resolution", 0.1);
   require(voxel_size_ > 0.0, "voxelizer.resolution must be positive");
+  voxels_visible_ = declare_parameter<bool>("voxelizer.visible", true);
   multipliers_.intensity =
     static_cast<float>(declare_parameter<double>("voxelizer.intensity_multiplier", 1.0));
   multipliers_.hit = declareU32("voxelizer.hit_multiplier", 1);
@@ -170,44 +177,49 @@ uint32_t R3vNode::declareU32(const std::string & name, int64_t fallback)
 
 void R3vNode::createVoxelizer()
 {
-  const auto backend = declare_parameter<std::string>("voxelizer.backend", "multi_threaded");
-  const int64_t threads = declare_parameter<int64_t>("voxelizer.threads", 0);
-  const int64_t buckets = declare_parameter<int64_t>("voxelizer.wgpu_bucket_count", 131072);
-  const uint32_t destroy_threshold = declareU32("voxelizer.destroy_threshold", 0);
-  const uint32_t construct_threshold = declareU32("voxelizer.construct_threshold", 2);
-  const uint32_t max_value = declareU32("voxelizer.max_value", 10);
-  require(threads >= 0, "voxelizer.threads must not be negative");
+  voxelizer_backend_ = declare_parameter<std::string>("voxelizer.backend", "multi_threaded");
+  voxelizer_threads_ = declare_parameter<int64_t>("voxelizer.threads", 0);
+  voxelizer_buckets_ = declare_parameter<int64_t>("voxelizer.wgpu_bucket_count", 131072);
+  destroy_threshold_ = declareU32("voxelizer.destroy_threshold", 0);
+  construct_threshold_ = declareU32("voxelizer.construct_threshold", 2);
+  max_value_ = declareU32("voxelizer.max_value", 10);
+  require(voxelizer_threads_ >= 0, "voxelizer.threads must not be negative");
   require(
-    buckets > 0 && buckets <= std::numeric_limits<uint32_t>::max(),
+    voxelizer_buckets_ > 0 && voxelizer_buckets_ <= std::numeric_limits<uint32_t>::max(),
     "voxelizer.wgpu_bucket_count must be positive and fit in 32 bits");
+  require(
+    voxelizer_backend_ == "single_threaded" || voxelizer_backend_ == "multi_threaded" ||
+    voxelizer_backend_ == "wgpu",
+    "voxelizer.backend must be single_threaded, multi_threaded or wgpu");
+  voxelizer_ = makeVoxelizer();
+}
 
+VoxelizerPtr R3vNode::makeVoxelizer() const
+{
   const auto resolution = static_cast<float>(voxel_size_);
   const rv::Multipliers & m = multipliers_;
   // compress = true: blocks of 4x4x2 voxels, what the tesselator takes.
   void * voxelizer = nullptr;
-  if (backend == "single_threaded") {
+  if (voxelizer_backend_ == "single_threaded") {
     voxelizer = rv::create_single_threaded_voxelizer(
-      resolution, m.intensity, m.hit, m.target, destroy_threshold,
-      construct_threshold, max_value, true);
-  } else if (backend == "multi_threaded") {
+      resolution, m.intensity, m.hit, m.target, destroy_threshold_,
+      construct_threshold_, max_value_, true);
+  } else if (voxelizer_backend_ == "multi_threaded") {
     voxelizer = rv::create_multi_threaded_voxelizer(
-      resolution, m.intensity, m.hit, m.target, destroy_threshold,
-      construct_threshold, max_value, true, static_cast<uintptr_t>(threads));
-  } else if (backend == "wgpu") {
-    voxelizer = rv::create_wgpu_voxelizer(
-      resolution, m.intensity, m.hit, m.target, destroy_threshold,
-      construct_threshold, max_value, true, static_cast<uint32_t>(buckets));
+      resolution, m.intensity, m.hit, m.target, destroy_threshold_,
+      construct_threshold_, max_value_, true, static_cast<uintptr_t>(voxelizer_threads_));
   } else {
-    throw std::invalid_argument(
-            "voxelizer.backend must be single_threaded, multi_threaded or wgpu");
+    voxelizer = rv::create_wgpu_voxelizer(
+      resolution, m.intensity, m.hit, m.target, destroy_threshold_,
+      construct_threshold_, max_value_, true, static_cast<uint32_t>(voxelizer_buckets_));
   }
   if (voxelizer == nullptr) {
     throw std::runtime_error(
-            "creating the " + backend + " voxelizer failed" +
-            (backend == "wgpu" ?
+            "creating the " + voxelizer_backend_ + " voxelizer failed" +
+            (voxelizer_backend_ == "wgpu" ?
             " (no GPU adapter able to run compute shaders, or wgpu_bucket_count too big)" : ""));
   }
-  voxelizer_.reset(voxelizer);
+  return VoxelizerPtr(voxelizer);
 }
 
 void R3vNode::createRenderer()
@@ -238,6 +250,7 @@ void R3vNode::createInterfaces()
   tf_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   cloud_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   render_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  control_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
   rclcpp::SubscriptionOptions tf_options;
   tf_options.callback_group = tf_group_;
@@ -272,12 +285,35 @@ void R3vNode::createInterfaces()
       [this](std_msgs::msg::String::ConstSharedPtr msg) {onRobotDescription(msg->data);},
       render_options);
   }
+  // Runtime controls only queue their change for the next onRender(). In the
+  // render group they could wait forever: a render longer than its period
+  // leaves the timer always ready, and the executor serves timers first.
+  rclcpp::SubscriptionOptions control_options;
+  control_options.callback_group = control_group_;
   if (!camera_pose_topic_.empty()) {
     camera_pose_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
       camera_pose_topic_, rclcpp::QoS(10),
-      [this](geometry_msgs::msg::PoseStamped::ConstSharedPtr msg) {camera_pose_ = *msg;},
-      render_options);
+      [this](geometry_msgs::msg::PoseStamped::ConstSharedPtr msg) {
+        std::lock_guard<std::mutex> lock(controls_mutex_);
+        controls_.camera_pose = *msg;
+      }, control_options);
   }
+  hidden_links_sub_ = create_subscription<std_msgs::msg::String>(
+    "~/hidden_links", rclcpp::QoS(10),
+    [this](std_msgs::msg::String::ConstSharedPtr msg) {onHiddenLinks(msg->data);},
+    control_options);
+  voxels_visible_sub_ = create_subscription<std_msgs::msg::Bool>(
+    "~/voxels_visible", rclcpp::QoS(10),
+    [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+      std::lock_guard<std::mutex> lock(controls_mutex_);
+      controls_.voxels_visible = msg->data;
+    }, control_options);
+  clear_voxels_sub_ = create_subscription<std_msgs::msg::Empty>(
+    "~/clear_voxels", rclcpp::QoS(10),
+    [this](std_msgs::msg::Empty::ConstSharedPtr) {
+      std::lock_guard<std::mutex> lock(controls_mutex_);
+      controls_.clear_voxels = true;
+    }, control_options);
 
   image_pub_ = image_transport::create_publisher(this, output_topic_);
   render_timer_ = create_wall_timer(
@@ -316,6 +352,17 @@ std::optional<Eigen::Isometry3d> R3vNode::lookup(
 
 void R3vNode::onCloud(const CloudConfig & config, const sensor_msgs::msg::PointCloud2 & cloud)
 {
+  const uint64_t generation = voxel_generation_.load();
+  if (generation != voxelizer_generation_) {
+    // The map was cleared: start over with an empty voxelizer.
+    try {
+      voxelizer_ = makeVoxelizer();
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(get_logger(), "Keeping the old voxel map: %s", e.what());
+    }
+    voxelizer_generation_ = generation;
+  }
+
   const rclcpp::Time stamp(cloud.header.stamp);
   std::string error;
   const auto cloud_to_fixed = lookup(cloud.header.frame_id, stamp, tf_timeout_, &error);
@@ -360,6 +407,10 @@ void R3vNode::onCloud(const CloudConfig & config, const sensor_msgs::msg::PointC
     rv::add_points(voxelizer_.get(), sensor_pos, points_.data(), points_.size());
   if (update.len > 0) {
     std::lock_guard<std::mutex> lock(pending_mutex_);
+    if (generation != voxel_generation_.load()) {
+      rv::drop_update(update);  // the map was cleared meanwhile
+      return;
+    }
     const size_t old_size = pending_blocks_.size();
     pending_blocks_.resize(old_size + update.len);
     std::memcpy(
@@ -377,6 +428,52 @@ void R3vNode::onRobotDescription(const std::string & urdf_xml)
   }
 }
 
+void R3vNode::onHiddenLinks(const std::string & links)
+{
+  std::vector<std::string> names;
+  std::string name;
+  for (const char c : links + ',') {
+    if (c == ',' || std::isspace(static_cast<unsigned char>(c))) {
+      if (!name.empty()) {
+        names.push_back(std::move(name));
+        name.clear();
+      }
+    } else {
+      name += c;
+    }
+  }
+  std::lock_guard<std::mutex> lock(controls_mutex_);
+  controls_.hidden_links = std::move(names);
+}
+
+void R3vNode::applyControls()
+{
+  Controls controls;
+  {
+    std::lock_guard<std::mutex> lock(controls_mutex_);
+    std::swap(controls, controls_);
+  }
+  if (controls.camera_pose) {
+    camera_pose_ = std::move(controls.camera_pose);
+  }
+  if (controls.hidden_links) {
+    robot_->setHiddenLinks(*controls.hidden_links);
+    std::string list;
+    for (const auto & name : *controls.hidden_links) {
+      list += (list.empty() ? "" : ", ") + name;
+    }
+    RCLCPP_INFO(get_logger(), "Hidden links: %s", list.empty() ? "none" : list.c_str());
+  }
+  // Cleared first: of a clear and a visibility change arriving together, the
+  // visibility is the newer state.
+  if (controls.clear_voxels) {
+    clearVoxels();
+  }
+  if (controls.voxels_visible) {
+    setVoxelsVisible(*controls.voxels_visible);
+  }
+}
+
 void R3vNode::flushVoxels()
 {
   blocks_.clear();
@@ -384,12 +481,65 @@ void R3vNode::flushVoxels()
     std::lock_guard<std::mutex> lock(pending_mutex_);
     blocks_.swap(pending_blocks_);
   }
-  if (blocks_.empty()) {
+  // Blocks carry their whole occupancy mask, so the last one wins.
+  for (const auto & block : blocks_) {
+    const BlockKey key{block.x, block.y, block.z};
+    if (block.i == 0) {
+      live_blocks_.erase(key);
+    } else {
+      live_blocks_[key] = block.i;
+    }
+  }
+  if (voxels_visible_) {
+    tesselate(blocks_);
+  }
+}
+
+void R3vNode::tesselateLiveBlocks(bool empty)
+{
+  blocks_.clear();
+  blocks_.reserve(live_blocks_.size());
+  for (const auto & [key, mask] : live_blocks_) {
+    blocks_.push_back({key.x, key.y, key.z, empty ? 0u : mask});
+  }
+  // Empty blocks empty their chunks, which the renderer then drops.
+  tesselate(blocks_);
+}
+
+void R3vNode::setVoxelsVisible(bool visible)
+{
+  if (visible == voxels_visible_) {
+    return;
+  }
+  voxels_visible_ = visible;
+  tesselateLiveBlocks(!visible);
+  RCLCPP_INFO(get_logger(), "%s the voxel map", visible ? "Showing" : "Hiding");
+}
+
+void R3vNode::clearVoxels()
+{
+  // Bumped before pending_blocks_ is emptied, so cloud callbacks still
+  // working with the old voxelizer cannot add to it afterwards.
+  ++voxel_generation_;
+  {
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    pending_blocks_.clear();
+  }
+  if (voxels_visible_) {
+    tesselateLiveBlocks(true);
+  }
+  live_blocks_.clear();
+  RCLCPP_INFO(get_logger(), "Cleared the voxel map");
+}
+
+void R3vNode::tesselate(const std::vector<rr::R3vPointI> & blocks)
+{
+  if (blocks.empty()) {
     return;
   }
   checkStatus(
     rr::r3v_greedy_mesh_tesselator_update_input_geometry(
-      tesselator_.get(), blocks_.data(), blocks_.size()),
+      tesselator_.get(), blocks.data(), blocks.size()),
     "tesselating voxels");
   rr::R3vGeometryDelta * delta = nullptr;
   checkStatus(
@@ -436,6 +586,7 @@ void R3vNode::onRender()
     };
   try {
     const auto t0 = Clock::now();
+    applyControls();
     flushVoxels();
     const auto t1 = Clock::now();
     robot_->update(*tf_buffer_, fixed_frame_, renderer_.get());

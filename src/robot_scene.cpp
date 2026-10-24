@@ -154,6 +154,7 @@ void RobotScene::load(const std::string & urdf_xml, rr::R3vWgpuRenderer * render
     }
   }
   instances_.clear();
+  children_.clear();
 
   // Visuals sharing a geometry become instances of one uploaded asset.
   std::map<std::string, std::vector<Instance>> by_geometry;
@@ -161,6 +162,10 @@ void RobotScene::load(const std::string & urdf_xml, rr::R3vWgpuRenderer * render
   std::vector<urdf::LinkSharedPtr> links;
   model.getLinks(links);
   for (const auto & link : links) {
+    auto & children = children_[link->name];
+    for (const auto & child : link->child_links) {
+      children.push_back(child->name);
+    }
     for (const auto & visual : link->visual_array) {
       if (!visual || !visual->geometry) {
         continue;
@@ -195,6 +200,42 @@ void RobotScene::load(const std::string & urdf_xml, rr::R3vWgpuRenderer * render
   RCLCPP_INFO(
     logger_, "Loaded robot '%s': %zu of %zu visuals, %zu distinct meshes",
     model.getName().c_str(), instances_.size(), visual_count, by_geometry.size());
+  unknown_hidden_.clear();
+  updateHidden();
+}
+
+void RobotScene::setHiddenLinks(const std::vector<std::string> & links)
+{
+  hidden_roots_ = links;
+  unknown_hidden_.clear();
+  updateHidden();
+}
+
+void RobotScene::updateHidden()
+{
+  hidden_.clear();
+  if (children_.empty()) {
+    return;  // no robot yet, load() expands them
+  }
+  std::vector<std::string> stack;
+  for (const auto & root : hidden_roots_) {
+    if (children_.count(root) == 0) {
+      if (unknown_hidden_.insert(root).second) {
+        RCLCPP_WARN(logger_, "Cannot hide link '%s': the robot has no such link", root.c_str());
+      }
+      continue;
+    }
+    stack.push_back(root);
+  }
+  while (!stack.empty()) {
+    std::string link = std::move(stack.back());
+    stack.pop_back();
+    if (!hidden_.insert(link).second) {
+      continue;
+    }
+    const auto & children = children_.at(link);
+    stack.insert(stack.end(), children.begin(), children.end());
+  }
 }
 
 void RobotScene::update(
@@ -202,6 +243,15 @@ void RobotScene::update(
 {
   std::string missing;
   for (auto & instance : instances_) {
+    if (hidden_.count(instance.link) != 0) {
+      if (instance.visible) {
+        checkStatus(
+          rr::r3v_wgpu_renderer_set_asset_visibility(renderer, instance.id, false),
+          "hiding a robot visual");
+        instance.visible = false;
+      }
+      continue;
+    }
     Eigen::Isometry3d link_to_fixed;
     try {
       link_to_fixed = tf2::transformToEigen(

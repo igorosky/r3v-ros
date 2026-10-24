@@ -69,12 +69,26 @@ docker run ... -v /path/to/src:/robot:ro r3v-ros:jazzy
 | `robot_description.topic` (`/robot_description`) | `std_msgs/String` (transient local) | in |
 | `point_clouds.<name>.topic` | `sensor_msgs/PointCloud2` | in |
 | `camera.pose_topic` (`~/camera_pose`) | `geometry_msgs/PoseStamped` | in |
+| `~/hidden_links` | `std_msgs/String` | in |
+| `~/voxels_visible` | `std_msgs/Bool` | in |
+| `~/clear_voxels` | `std_msgs/Empty` | in |
 | `output.topic` (`/r3v/image`) + transports | `sensor_msgs/Image` | out |
 
 The camera is placed by `camera.position` / `camera.target`, given in
 `camera.frame` (the fixed frame by default; a robot frame makes it follow the
 robot). A pose on `camera.pose_topic` replaces them: the camera sits at the
 pose and looks along its +X axis with +Z up.
+
+Three topics change the scene at runtime. Each message replaces the previous
+state rather than adding to it, so publishing the same one again is harmless:
+
+- `~/hidden_links`: comma or space separated link names. Every listed link
+  is hidden together with all links below it in the URDF tree (the arm's base
+  link hides the whole arm); an empty string shows everything again. Starts
+  from `robot_description.hidden_links` and survives a new robot description.
+- `~/voxels_visible`: hides or shows the voxel map. Point clouds keep
+  building it while it is hidden. Starts from `voxelizer.visible`.
+- `~/clear_voxels`: forgets the whole voxel map.
 
 With `output.lazy` (default) nothing is rendered while nobody subscribes.
 Frames are stamped with the time their scene was sampled. The renderer reads

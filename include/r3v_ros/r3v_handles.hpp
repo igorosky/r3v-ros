@@ -21,10 +21,7 @@ struct RendererDeleter
 };
 struct TesselatorDeleter
 {
-  void operator()(rr::R3vGreedyMeshTesselator * p) const
-  {
-    rr::r3v_greedy_mesh_tesselator_drop(p);
-  }
+  void operator()(rr::R3vCpuTesselator * p) const {rr::r3v_cpu_tesselator_drop(p);}
 };
 struct MeshDeleter
 {
@@ -40,7 +37,7 @@ struct VoxelizerDeleter
 };
 
 using RendererPtr = std::unique_ptr<rr::R3vWgpuRenderer, RendererDeleter>;
-using TesselatorPtr = std::unique_ptr<rr::R3vGreedyMeshTesselator, TesselatorDeleter>;
+using TesselatorPtr = std::unique_ptr<rr::R3vCpuTesselator, TesselatorDeleter>;
 using MeshPtr = std::unique_ptr<rr::R3vStlMesh, MeshDeleter>;
 using GeometryDeltaPtr = std::unique_ptr<rr::R3vGeometryDelta, GeometryDeltaDeleter>;
 using VoxelizerPtr = std::unique_ptr<void, VoxelizerDeleter>;

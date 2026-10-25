@@ -94,8 +94,10 @@ private:
   Eigen::Vector3d camera_target_;
   CameraLens lens_;
   std::string camera_pose_topic_;
+  double color_offset_;
   std::vector<CloudConfig> cloud_configs_;
   double voxel_size_;
+  bool marching_cubes_;
   rv::Multipliers multipliers_;  // defaults of every point cloud
   std::string voxelizer_backend_;
   int64_t voxelizer_threads_;

@@ -100,7 +100,11 @@ frames back one call late, so images lag one period (`1 / rate`).
   `r3v_node` executable uses one; as a component (`r3v_ros::R3vNode`) load it
   into `component_container_mt`.
 - Robot visuals are drawn without URDF colors (the renderer shades meshes
-  white); voxels are colored by distance from the camera.
+  white); voxels are colored by distance from the camera (turbo over 0..50 m,
+  shifted by `camera.color_offset`).
+- `voxelizer.marching_cubes` smooths the voxel surface, which also closes the
+  gaps a thin, steep surface (ground seen by a lidar) leaves between voxels
+  that only touch at an edge.
 - Voxels live in the fixed frame and accumulate over time; rays clear voxels
   they pass through.
 - A renderer failure shuts the node down so a supervisor (e.g. compose

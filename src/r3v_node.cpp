@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -121,6 +122,8 @@ void R3vNode::declareParameters()
   lens_.near = declare_parameter<double>("camera.near", 0.05);
   lens_.far = declare_parameter<double>("camera.far", 200.0);
   camera_pose_topic_ = declare_parameter<std::string>("camera.pose_topic", "~/camera_pose");
+  color_offset_ = declare_parameter<double>("camera.color_offset", 0.0);
+  require(std::isfinite(color_offset_), "camera.color_offset must be finite");
   require(
     lens_.fov_deg > 0.0 && lens_.fov_deg < 180.0, "camera.fov_deg must be between 0 and 180");
   require(lens_.near > 0.0 && lens_.far > lens_.near, "camera needs 0 < near < far");
@@ -128,6 +131,7 @@ void R3vNode::declareParameters()
   voxel_size_ = declare_parameter<double>("voxelizer.resolution", 0.1);
   require(voxel_size_ > 0.0, "voxelizer.resolution must be positive");
   voxels_visible_ = declare_parameter<bool>("voxelizer.visible", true);
+  marching_cubes_ = declare_parameter<bool>("voxelizer.marching_cubes", false);
   multipliers_.intensity =
     static_cast<float>(declare_parameter<double>("voxelizer.intensity_multiplier", 1.0));
   multipliers_.hit = declareU32("voxelizer.hit_multiplier", 1);
@@ -235,13 +239,13 @@ void R3vNode::createRenderer()
     "configuring the renderer");
   frame_.resize(static_cast<size_t>(width_) * height_ * 4);
 
-  tesselator_.reset(rr::r3v_greedy_mesh_tesselator_create());
+  tesselator_.reset(rr::r3v_cpu_tesselator_create());
   if (!tesselator_) {
     throw std::runtime_error("creating the tesselator failed: " + lastRendererError());
   }
   checkStatus(
-    rr::r3v_greedy_mesh_tesselator_configure(
-      tesselator_.get(), {static_cast<float>(voxel_size_)}),
+    rr::r3v_cpu_tesselator_configure(
+      tesselator_.get(), {static_cast<float>(voxel_size_), marching_cubes_}),
     "configuring the tesselator");
 }
 
@@ -538,12 +542,12 @@ void R3vNode::tesselate(const std::vector<rr::R3vPointI> & blocks)
     return;
   }
   checkStatus(
-    rr::r3v_greedy_mesh_tesselator_update_input_geometry(
+    rr::r3v_cpu_tesselator_update_input_geometry(
       tesselator_.get(), blocks.data(), blocks.size()),
     "tesselating voxels");
   rr::R3vGeometryDelta * delta = nullptr;
   checkStatus(
-    rr::r3v_greedy_mesh_tesselator_get_output_geometry_delta(tesselator_.get(), &delta),
+    rr::r3v_cpu_tesselator_get_output_geometry_delta(tesselator_.get(), &delta),
     "tesselating voxels");
   if (delta != nullptr) {
     // Takes ownership of delta, also on failure.
@@ -612,6 +616,12 @@ void R3vNode::onRender()
         frame.c_str(), fixed_frame_.c_str());
       return;
     }
+    // The renderer colours voxels by their distance from state.position
+    // along the view, through turbo over 0..50 m, and reads the position for
+    // nothing else: moving it back keeps close voxels off turbo's dark end.
+    state.position.x -= static_cast<float>(color_offset_) * state.forward.x;
+    state.position.y -= static_cast<float>(color_offset_) * state.forward.y;
+    state.position.z -= static_cast<float>(color_offset_) * state.forward.z;
 
     const rclcpp::Time now = this->now();
     checkStatus(

@@ -54,6 +54,11 @@
       # the pose's +X axis with +Z up. Overrides position/target once received.
       # Empty disables it.
       pose_topic: "~/camera_pose"
+      # Meters added to the distance voxels are coloured by. The renderer
+      # colours them by distance from the camera through the turbo colormap
+      # over 0..50 m, whose low end is close to black: voxels a few meters
+      # away come out almost black unless this is around 5..10.
+      color_offset: 0.0
 
     voxelizer:
       # single_threaded, multi_threaded or wgpu (GPU compute).
@@ -68,6 +73,10 @@
       # runtime, ~/clear_voxels (std_msgs/Empty) forgets it. Point clouds keep
       # building the map while it is hidden.
       visible: true
+      # Smooth the voxel surface with marching cubes instead of drawing the
+      # voxel faces. Closes the gaps a thin, steep surface (e.g. ground seen
+      # by a lidar) leaves between voxels that only touch at an edge.
+      marching_cubes: false
       # Every point adds trunc(intensity * intensity_multiplier) *
       # target_multiplier to the voxel it hits and subtracts
       # trunc(intensity * intensity_multiplier) * hit_multiplier from every

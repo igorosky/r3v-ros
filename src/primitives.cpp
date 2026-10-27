@@ -85,7 +85,7 @@ Triangles makeSphere(double radius, int stacks, int slices) {
         radius * std::cos(theta));
     };
   Triangles out;
-  out.reserve(static_cast<size_t>(stacks) * slices * 2);
+  out.reserve(static_cast<size_t>(stacks) * static_cast<size_t>(slices) * 2);
   for (int i = 0; i < stacks; ++i) {
     for (int j = 0; j < slices; ++j) {
       const Eigen::Vector3d a = point(i, j);

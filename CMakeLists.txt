@@ -87,4 +87,14 @@ install(TARGETS r3v_node DESTINATION lib/${PROJECT_NAME})
 install(FILES "${renderer_LIBRARY}" "${voxelizer_LIBRARY}" DESTINATION lib)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
+if(BUILD_TESTING)
+  # Explicit paths: ament_lint_auto would also lint the submodules' generated
+  # bindings.
+  find_package(ament_cmake_cpplint REQUIRED)
+  find_package(ament_cmake_uncrustify REQUIRED)
+  ament_cpplint(src include)
+  ament_uncrustify(CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/uncrustify.cfg"
+    src include)
+endif()
+
 ament_package()

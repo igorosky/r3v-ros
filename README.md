@@ -120,3 +120,29 @@ frames back one call late, so images lag one period (`1 / rate`).
 Needs a ROS 2 install, Rust (via rustup, edition 2024 capable) and the
 dependencies from `package.xml` (`rosdep install --from-paths . --ignore-src`).
 Clone into a colcon workspace and run `colcon build`.
+
+## Development
+
+C++ code is checked with cpplint ([CPPLINT.cfg](CPPLINT.cfg)) and uncrustify
+([uncrustify.cfg](uncrustify.cfg)). Both run as tests:
+
+```bash
+colcon test --packages-select r3v_ros && colcon test-result --verbose
+```
+
+or directly, from the repository root:
+
+```bash
+ament_cpplint src include
+ament_uncrustify -c uncrustify.cfg src include  # --reformat to fix
+```
+
+The code style is the one of Humble's uncrustify (0.72); newer versions
+format some constructs differently.
+
+CI (GitHub Actions, [.github/workflows/ci.yml](.github/workflows/ci.yml)):
+
+- `lint`: cpplint and uncrustify on Humble, without building.
+- `build`: build and `colcon test` on Humble and Jazzy, warnings are errors
+  (`-Werror`). The uncrustify test runs on Humble only.
+- `docker`: builds the Docker image for Humble and Jazzy (not pushed).

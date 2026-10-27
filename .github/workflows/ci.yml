@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast feedback without the Rust build. The same checks run as the cpplint
+  # and uncrustify tests of `colcon test`.
+  lint:
+    name: cpplint + uncrustify (humble)
+    runs-on: ubuntu-24.04
+    container: ros:humble-ros-base
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the linters
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ros-humble-ament-cpplint ros-humble-ament-uncrustify
+
+      - name: cpplint
+        run: |
+          source /opt/ros/humble/setup.bash
+          ament_cpplint src include
+
+      # Only src and include: the submodules' generated bindings do not follow
+      # this style.
+      - name: uncrustify
+        if: success() || failure()
+        run: |
+          source /opt/ros/humble/setup.bash
+          ament_uncrustify -c uncrustify.cfg src include
+
+  build:
+    name: build + test (${{ matrix.distro }})
+    runs-on: ubuntu-24.04
+    container: ros:${{ matrix.distro }}-ros-base
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [humble, jazzy]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # git before the checkout, otherwise it downloads a tarball without the
+      # submodules.
+      - name: Install the build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates cmake curl git \
+            python3-colcon-common-extensions
+          git config --global --add safe.directory '*'
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          path: src/r3v_ros
+
+      # Ubuntu's rustc is too old for the r3v crates (edition 2024).
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install the dependencies
+        run: |
+          rosdep update --rosdistro "${ROS_DISTRO}"
+          rosdep install --from-paths src --ignore-src -y --rosdistro "${ROS_DISTRO}"
+
+      - name: Cargo cache key
+        id: cargo-key
+        run: |
+          key=$( { git -C src/r3v_ros submodule status; rustc -V; } | sha256sum | cut -c1-16)
+          echo "key=${key}" >> "${GITHUB_OUTPUT}"
+
+      # One cache per distro (different glibc).
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            cargo-target
+          key: cargo-${{ matrix.distro }}-${{ steps.cargo-key.outputs.key }}
+          restore-keys: cargo-${{ matrix.distro }}-
+
+      - name: Build
+        run: |
+          # shellcheck source=/dev/null
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          colcon build --event-handlers console_direct+ \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-Werror \
+            -DR3V_CARGO_TARGET_DIR="${GITHUB_WORKSPACE}/cargo-target"
+
+      # Code style is defined by Humble's uncrustify (0.72), newer ones format
+      # some constructs differently.
+      - name: Test
+        run: |
+          # shellcheck source=/dev/null
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          args=()
+          if [[ "${ROS_DISTRO}" != humble ]]; then
+            args=(--ctest-args -LE uncrustify)
+          fi
+          colcon test --event-handlers console_direct+ "${args[@]}"
+          colcon test-result --verbose
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: logs-${{ matrix.distro }}
+          path: |
+            log/
+            build/r3v_ros/test_results/
+
+  docker:
+    name: docker image (${{ matrix.distro }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [humble, jazzy]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: docker/setup-buildx-action@v4
+
+      # The cargo cache mounts of the Dockerfile do not survive between runs:
+      # the Rust crates are rebuilt whenever the sources change.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          build-args: ROS_DISTRO=${{ matrix.distro }}
+          tags: r3v-ros:${{ matrix.distro }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.distro }}
+          cache-to: type=gha,scope=${{ matrix.distro }},mode=max

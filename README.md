@@ -79,7 +79,7 @@ The camera is placed by `camera.position` / `camera.target`, given in
 robot). A pose on `camera.pose_topic` replaces them: the camera sits at the
 pose and looks along its +X axis with +Z up.
 
-Three topics change the scene at runtime. Each message replaces the previous
+These topics change the scene at runtime. Each message replaces the previous
 state rather than adding to it, so publishing the same one again is harmless:
 
 - `~/hidden_links`: comma or space separated link names. Every listed link
@@ -89,6 +89,18 @@ state rather than adding to it, so publishing the same one again is harmless:
 - `~/voxels_visible`: hides or shows the voxel map. Point clouds keep
   building it while it is hidden. Starts from `voxelizer.visible`.
 - `~/clear_voxels`: forgets the whole voxel map.
+- `~/marching_cubes/set_enabled` (`std_msgs/Bool`): switches marching cubes
+  smoothing of the voxel surface. Starts from `voxelizer.marching_cubes`.
+- `~/background/set_color` (`std_msgs/ColorRGBA`): background color, sRGB
+  components between 0 and 1, alpha ignored. Starts from
+  `output.background_color`.
+- `~/colormap/set_depth_range` (`std_msgs/Float64`): meters over which the
+  voxel colormap runs once, positive. Starts from `camera.color_depth_range`.
+
+Invalid values are logged and ignored. The last three settings are published
+on `~/marching_cubes/get_enabled`, `~/background/get_color` and
+`~/colormap/get_depth_range` with a transient local QoS, so a late subscriber
+(with a transient local, reliable QoS too) gets the current state.
 
 With `output.lazy` (default) nothing is rendered while nobody subscribes.
 Frames are stamped with the time their scene was sampled. The renderer reads
@@ -100,11 +112,12 @@ frames back one call late, so images lag one period (`1 / rate`).
   `r3v_node` executable uses one; as a component (`r3v_ros::R3vNode`) load it
   into `component_container_mt`.
 - Robot visuals are drawn without URDF colors (the renderer shades meshes
-  white); voxels are colored by distance from the camera (turbo over 0..50 m,
-  shifted by `camera.color_offset`).
-- `voxelizer.marching_cubes` smooths the voxel surface, which also closes the
-  gaps a thin, steep surface (ground seen by a lidar) leaves between voxels
-  that only touch at an edge.
+  white); voxels are colored by distance from the camera (turbo over
+  0..`camera.color_depth_range`, 50 m by default, shifted by
+  `camera.color_offset`).
+- Marching cubes (`voxelizer.marching_cubes`) smooths the voxel surface, which
+  also closes the gaps a thin, steep surface (ground seen by a lidar) leaves
+  between voxels that only touch at an edge.
 - Voxels live in the fixed frame and accumulate over time; rays clear voxels
   they pass through.
 - Robot links (and a camera frame that is a robot link) are posed from two

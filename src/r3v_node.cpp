@@ -35,6 +35,17 @@ void require(bool condition, const std::string& message) {
   }
 }
 
+bool validColor(double r, double g, double b) {
+  const auto unit = [](double c) { return c >= 0.0 && c <= 1.0; };
+  return unit(r) && unit(g) && unit(b);
+}
+
+// The renderer takes it as a positive float.
+bool validDepthRange(double range) {
+  return range > 0.0 && range <= std::numeric_limits<float>::max() &&
+         static_cast<float>(range) > 0.0f;
+}
+
 }  // namespace
 
 R3vNode::R3vNode(const rclcpp::NodeOptions& options)
@@ -90,6 +101,11 @@ void R3vNode::declareParameters() {
   hidden_links_.erase(
     std::remove(hidden_links_.begin(), hidden_links_.end(), ""), hidden_links_.end());
 
+  const auto vector3 = [this](const std::string& name, const std::vector<double>& fallback) {
+      const auto v = declare_parameter<std::vector<double>>(name, fallback);
+      require(v.size() == 3, name + " must have 3 elements");
+      return Eigen::Vector3d(v[0], v[1], v[2]);
+    };
   output_topic_ = declare_parameter<std::string>("output.topic", "/r3v/image");
   const int64_t width = declare_parameter<int64_t>("output.width", 1280);
   const int64_t height = declare_parameter<int64_t>("output.height", 720);
@@ -108,12 +124,14 @@ void R3vNode::declareParameters() {
   require(
     encoding_ == enc::BGR8 || encoding_ == enc::RGB8 || encoding_ == enc::BGRA8 ||
     encoding_ == enc::RGBA8, "output.encoding must be bgr8, rgb8, bgra8 or rgba8");
+  const Eigen::Vector3d background = vector3("output.background_color", { 0.0, 0.0, 0.0 });
+  require(
+    validColor(background.x(), background.y(), background.z()),
+    "output.background_color components must be between 0 and 1");
+  background_color_ = {
+    static_cast<float>(background.x()), static_cast<float>(background.y()),
+    static_cast<float>(background.z()) };
 
-  const auto vector3 = [this](const std::string& name, const std::vector<double>& fallback) {
-      const auto v = declare_parameter<std::vector<double>>(name, fallback);
-      require(v.size() == 3, name + " must have 3 elements");
-      return Eigen::Vector3d(v[0], v[1], v[2]);
-    };
   camera_frame_ = declare_parameter<std::string>("camera.frame", "");
   camera_position_ = vector3("camera.position", { 4.0, 4.0, 3.0 });
   camera_target_ = vector3("camera.target", { 0.0, 0.0, 0.5 });
@@ -123,6 +141,10 @@ void R3vNode::declareParameters() {
   camera_pose_topic_ = declare_parameter<std::string>("camera.pose_topic", "~/camera_pose");
   color_offset_ = declare_parameter<double>("camera.color_offset", 0.0);
   require(std::isfinite(color_offset_), "camera.color_offset must be finite");
+  color_depth_range_ = declare_parameter<double>("camera.color_depth_range", 50.0);
+  require(
+    validDepthRange(color_depth_range_),
+    "camera.color_depth_range must be positive and fit in a float");
   require(
     lens_.fov_deg > 0.0 && lens_.fov_deg < 180.0, "camera.fov_deg must be between 0 and 180");
   require(lens_.near > 0.0 && lens_.far > lens_.near, "camera needs 0 < near < far");
@@ -229,9 +251,7 @@ void R3vNode::createRenderer() {
             "creating the renderer failed, no usable GPU adapter (is a Vulkan driver "
             "installed and the GPU device available?): " + lastRendererError());
   }
-  checkStatus(
-    rr::r3v_wgpu_renderer_configure(renderer_.get(), { width_, height_ }),
-    "configuring the renderer");
+  configureRenderer();
   frame_.resize(static_cast<size_t>(width_) * height_ * 4);
 
   tesselator_.reset(rr::r3v_cpu_tesselator_create());
@@ -242,6 +262,15 @@ void R3vNode::createRenderer() {
     rr::r3v_cpu_tesselator_configure(
       tesselator_.get(), { static_cast<float>(voxel_size_), marching_cubes_ }),
     "configuring the tesselator");
+}
+
+void R3vNode::configureRenderer() {
+  // The same frame size keeps the frame the renderer holds.
+  checkStatus(
+    rr::r3v_wgpu_renderer_configure(
+      renderer_.get(),
+      { width_, height_, background_color_, static_cast<float>(color_depth_range_) }),
+    "configuring the renderer");
 }
 
 void R3vNode::createInterfaces() {
@@ -312,6 +341,48 @@ void R3vNode::createInterfaces() {
       std::lock_guard<std::mutex> lock(controls_mutex_);
       controls_.clear_voxels = true;
     }, control_options);
+  // Values the renderer rejects are dropped here, failing there stops the node.
+  marching_cubes_sub_ = create_subscription<std_msgs::msg::Bool>(
+    "~/marching_cubes/set_enabled", rclcpp::QoS(10),
+    [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+      std::lock_guard<std::mutex> lock(controls_mutex_);
+      controls_.marching_cubes = msg->data;
+    }, control_options);
+  background_color_sub_ = create_subscription<std_msgs::msg::ColorRGBA>(
+    "~/background/set_color", rclcpp::QoS(10),
+    [this](std_msgs::msg::ColorRGBA::ConstSharedPtr msg) {
+      if (!validColor(msg->r, msg->g, msg->b)) {
+        RCLCPP_WARN(
+          get_logger(), "Ignoring background color (%g, %g, %g): components must be "
+          "between 0 and 1", msg->r, msg->g, msg->b);
+        return;
+      }
+      std::lock_guard<std::mutex> lock(controls_mutex_);
+      controls_.background_color = rr::R3vVec3{ msg->r, msg->g, msg->b };
+    }, control_options);
+  color_depth_range_sub_ = create_subscription<std_msgs::msg::Float64>(
+    "~/colormap/set_depth_range", rclcpp::QoS(10),
+    [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
+      if (!validDepthRange(msg->data)) {
+        RCLCPP_WARN(
+          get_logger(), "Ignoring colormap depth range %g: must be positive and fit in a "
+          "float", msg->data);
+        return;
+      }
+      std::lock_guard<std::mutex> lock(controls_mutex_);
+      controls_.color_depth_range = msg->data;
+    }, control_options);
+
+  const rclcpp::QoS state_qos = rclcpp::QoS(1).reliable().transient_local();
+  marching_cubes_pub_ =
+    create_publisher<std_msgs::msg::Bool>("~/marching_cubes/get_enabled", state_qos);
+  background_color_pub_ =
+    create_publisher<std_msgs::msg::ColorRGBA>("~/background/get_color", state_qos);
+  color_depth_range_pub_ =
+    create_publisher<std_msgs::msg::Float64>("~/colormap/get_depth_range", state_qos);
+  publishMarchingCubes();
+  publishBackgroundColor();
+  publishColorDepthRange();
 
   image_pub_ = image_transport::create_publisher(
     this, output_topic_,
@@ -463,8 +534,18 @@ void R3vNode::applyControls() {
   if (controls.clear_voxels) {
     clearVoxels();
   }
+  // Before the visibility, which would tesselate the shown map in the old mode.
+  if (controls.marching_cubes) {
+    setMarchingCubes(*controls.marching_cubes);
+  }
   if (controls.voxels_visible) {
     setVoxelsVisible(*controls.voxels_visible);
+  }
+  if (controls.background_color) {
+    setBackgroundColor(*controls.background_color);
+  }
+  if (controls.color_depth_range) {
+    setColorDepthRange(*controls.color_depth_range);
   }
 }
 
@@ -522,6 +603,62 @@ void R3vNode::clearVoxels() {
   RCLCPP_INFO(get_logger(), "Cleared the voxel map");
 }
 
+void R3vNode::setMarchingCubes(bool enabled) {
+  if (enabled == marching_cubes_) {
+    return;
+  }
+  marching_cubes_ = enabled;
+  checkStatus(
+    rr::r3v_cpu_tesselator_set_marching_cubes_enabled(tesselator_.get(), enabled),
+    "switching marching cubes");
+  // Every chunk with voxels is re-tesselated, new blocks or not.
+  uploadGeometryDelta();
+  publishMarchingCubes();
+  RCLCPP_INFO(get_logger(), "%s marching cubes", enabled ? "Enabled" : "Disabled");
+}
+
+void R3vNode::setBackgroundColor(const rr::R3vVec3& color) {
+  const rr::R3vVec3& old = background_color_;
+  if (color.x == old.x && color.y == old.y && color.z == old.z) {
+    return;
+  }
+  background_color_ = color;
+  configureRenderer();
+  publishBackgroundColor();
+  RCLCPP_INFO(get_logger(), "Background color (%g, %g, %g)", color.x, color.y, color.z);
+}
+
+void R3vNode::setColorDepthRange(double range) {
+  if (range == color_depth_range_) {
+    return;
+  }
+  color_depth_range_ = range;
+  configureRenderer();
+  publishColorDepthRange();
+  RCLCPP_INFO(get_logger(), "Colormap depth range %g m", range);
+}
+
+void R3vNode::publishMarchingCubes() {
+  std_msgs::msg::Bool msg;
+  msg.data = marching_cubes_;
+  marching_cubes_pub_->publish(msg);
+}
+
+void R3vNode::publishBackgroundColor() {
+  std_msgs::msg::ColorRGBA msg;
+  msg.r = background_color_.x;
+  msg.g = background_color_.y;
+  msg.b = background_color_.z;
+  msg.a = 1.0f;
+  background_color_pub_->publish(msg);
+}
+
+void R3vNode::publishColorDepthRange() {
+  std_msgs::msg::Float64 msg;
+  msg.data = color_depth_range_;
+  color_depth_range_pub_->publish(msg);
+}
+
 void R3vNode::tesselate(const std::vector<rr::R3vPointI>& blocks) {
   if (blocks.empty()) {
     return;
@@ -530,6 +667,10 @@ void R3vNode::tesselate(const std::vector<rr::R3vPointI>& blocks) {
     rr::r3v_cpu_tesselator_update_input_geometry(
       tesselator_.get(), blocks.data(), blocks.size()),
     "tesselating voxels");
+  uploadGeometryDelta();
+}
+
+void R3vNode::uploadGeometryDelta() {
   rr::R3vGeometryDelta* delta = nullptr;
   checkStatus(
     rr::r3v_cpu_tesselator_get_output_geometry_delta(tesselator_.get(), &delta),
@@ -600,8 +741,9 @@ void R3vNode::onRender() {
       return;
     }
     // The renderer colours voxels by their distance from state.position
-    // along the view, through turbo over 0..50 m, and reads the position for
-    // nothing else: moving it back keeps close voxels off turbo's dark end.
+    // along the view, through turbo over 0..color_depth_range, and reads the
+    // position for nothing else: moving it back keeps close voxels off
+    // turbo's dark end.
     state.position.x -= static_cast<float>(color_offset_) * state.forward.x;
     state.position.y -= static_cast<float>(color_offset_) * state.forward.y;
     state.position.z -= static_cast<float>(color_offset_) * state.forward.z;

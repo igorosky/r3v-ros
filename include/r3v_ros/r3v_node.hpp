@@ -15,7 +15,9 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/color_rgba.hpp"
 #include "std_msgs/msg/empty.hpp"
+#include "std_msgs/msg/float64.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "tf2_msgs/msg/tf_message.hpp"
 #if __has_include("tf2_ros/buffer.hpp")
@@ -48,6 +50,8 @@ private:
   // A new, empty voxelizer from the voxelizer.* parameters.
   VoxelizerPtr makeVoxelizer() const;
   void createRenderer();
+  // Applies the frame size, background color and colormap depth range.
+  void configureRenderer();
   void createInterfaces();
 
   void onTf(const tf2_msgs::msg::TFMessage& msg, bool is_static);
@@ -65,10 +69,18 @@ private:
   bool cameraView(CameraView& view) const;
   void flushVoxels();
   void tesselate(const std::vector<rr::R3vPointI>& blocks);
+  // Uploads the chunks the tesselator changed since the last call.
+  void uploadGeometryDelta();
   // Sends every live block to the tesselator, emptied when `empty`.
   void tesselateLiveBlocks(bool empty);
   void setVoxelsVisible(bool visible);
   void clearVoxels();
+  void setMarchingCubes(bool enabled);
+  void setBackgroundColor(const rr::R3vVec3& color);
+  void setColorDepthRange(double range);
+  void publishMarchingCubes();
+  void publishBackgroundColor();
+  void publishColorDepthRange();
   void publish(const std::vector<uint8_t>& bgra, const rclcpp::Time& stamp);
 
   // Parameters.
@@ -97,7 +109,6 @@ private:
   double color_offset_;
   std::vector<CloudConfig> cloud_configs_;
   double voxel_size_;
-  bool marching_cubes_;
   rv::Multipliers multipliers_;  // defaults of every point cloud
   std::string voxelizer_backend_;
   int64_t voxelizer_threads_;
@@ -144,6 +155,9 @@ private:
     std::optional<std::vector<std::string>> hidden_links;
     std::optional<bool> voxels_visible;
     bool clear_voxels = false;
+    std::optional<bool> marching_cubes;
+    std::optional<rr::R3vVec3> background_color;
+    std::optional<double> color_depth_range;
   };
   std::mutex controls_mutex_;
   Controls controls_;
@@ -157,6 +171,9 @@ private:
   // hidden, shown and cleared without the tesselator's help.
   std::unordered_map<BlockKey, uint32_t, BlockKeyHash> live_blocks_;
   bool voxels_visible_;
+  bool marching_cubes_;
+  rr::R3vVec3 background_color_;  // sRGB, each component in 0..1
+  double color_depth_range_;
   std::vector<rv::PointF> points_;  // cloud callback group only
 
   rclcpp::CallbackGroup::SharedPtr tf_group_;
@@ -170,6 +187,13 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr hidden_links_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr voxels_visible_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr clear_voxels_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr marching_cubes_sub_;
+  rclcpp::Subscription<std_msgs::msg::ColorRGBA>::SharedPtr background_color_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr color_depth_range_sub_;
+  // Current state of the settings above, transient local for late joiners.
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr marching_cubes_pub_;
+  rclcpp::Publisher<std_msgs::msg::ColorRGBA>::SharedPtr background_color_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr color_depth_range_pub_;
   std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;
   image_transport::Publisher image_pub_;
   rclcpp::TimerBase::SharedPtr render_timer_;

@@ -39,6 +39,10 @@
       frame_id: ""
       # Only render while someone subscribes.
       lazy: true
+      # Opaque background, sRGB red, green and blue between 0 and 1.
+      # ~/background/set_color (std_msgs/ColorRGBA, alpha ignored) changes it
+      # at runtime, ~/background/get_color holds the current one.
+      background_color: [0.0, 0.0, 0.0]
       # sensor_data (best effort) or reliable. Frames are large (width x height
       # x 3..4 bytes), so DDS splits each into many fragments. With a reliable
       # writer, a best-effort reader that loses fragments stops receiving for
@@ -65,9 +69,14 @@
       pose_topic: "~/camera_pose"
       # Meters added to the distance voxels are coloured by. The renderer
       # colours them by distance from the camera through the turbo colormap
-      # over 0..50 m, whose low end is close to black: voxels a few meters
-      # away come out almost black unless this is around 5..10.
+      # over 0..color_depth_range, whose low end is close to black: voxels a
+      # few meters away come out almost black unless this is around 5..10
+      # (with the default range).
       color_offset: 0.0
+      # Meters over which the voxel colormap runs once. ~/colormap/set_depth_range
+      # (std_msgs/Float64) changes it at runtime, ~/colormap/get_depth_range
+      # holds the current one.
+      color_depth_range: 50.0
 
     voxelizer:
       # single_threaded, multi_threaded or wgpu (GPU compute).
@@ -85,6 +94,8 @@
       # Smooth the voxel surface with marching cubes instead of drawing the
       # voxel faces. Closes the gaps a thin, steep surface (e.g. ground seen
       # by a lidar) leaves between voxels that only touch at an edge.
+      # ~/marching_cubes/set_enabled (std_msgs/Bool) switches it at runtime,
+      # ~/marching_cubes/get_enabled holds the current state.
       marching_cubes: false
       # Every point adds trunc(intensity * intensity_multiplier) *
       # target_multiplier to the voxel it hits and subtracts

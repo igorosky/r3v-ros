@@ -8,7 +8,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
-add_compile_options(-Wall -Wextra -Wpedantic)
+add_compile_options(-std=c++17 -Wall -Wextra -Wpedantic -pedantic-errors -Wdeprecated -Wc++17-compat -Wconversion -Wsign-conversion
+  -Wpessimizing-move -Werror)
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)

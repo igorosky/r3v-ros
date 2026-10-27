@@ -155,6 +155,7 @@ void RobotScene::load(const std::string & urdf_xml, rr::R3vWgpuRenderer * render
   }
   instances_.clear();
   children_.clear();
+  root_ = model.getRoot() ? model.getRoot()->name : "";
 
   // Visuals sharing a geometry become instances of one uploaded asset.
   std::map<std::string, std::vector<Instance>> by_geometry;
@@ -252,17 +253,14 @@ void RobotScene::update(
       }
       continue;
     }
-    Eigen::Isometry3d link_to_fixed;
-    try {
-      link_to_fixed = tf2::transformToEigen(
-        tf.lookupTransform(fixed_frame, instance.link, tf2::TimePointZero));
-    } catch (const tf2::TransformException &) {
+    const auto link_to_fixed = lookupLatest(tf, fixed_frame, instance.link);
+    if (!link_to_fixed) {
       missing = instance.link;
       continue;
     }
     checkStatus(
       rr::r3v_wgpu_renderer_set_asset_transform(
-        renderer, instance.id, toTwist(toRender(link_to_fixed * instance.origin))),
+        renderer, instance.id, toTwist(toRender(*link_to_fixed * instance.origin))),
       "posing a robot visual");
     if (!instance.visible) {
       checkStatus(
@@ -275,6 +273,30 @@ void RobotScene::update(
     RCLCPP_WARN_THROTTLE(
       logger_, *clock_, 5000, "No transform from '%s' to '%s' yet; its visuals keep their "
       "last pose", missing.c_str(), fixed_frame.c_str());
+  }
+}
+
+std::optional<Eigen::Isometry3d> RobotScene::lookupLatest(
+  const tf2_ros::Buffer & tf, const std::string & fixed_frame, const std::string & frame,
+  std::string * error) const
+{
+  const auto latest = [&tf](const std::string & target, const std::string & source) {
+      return target == source ? Eigen::Isometry3d::Identity() :
+             tf2::transformToEigen(tf.lookupTransform(target, source, tf2::TimePointZero));
+    };
+  if (frame.empty() || fixed_frame.empty() || frame == fixed_frame) {
+    return Eigen::Isometry3d::Identity();
+  }
+  try {
+    if (root_.empty() || children_.count(frame) == 0) {
+      return latest(fixed_frame, frame);  // not a link of the robot
+    }
+    return latest(fixed_frame, root_) * latest(root_, frame);
+  } catch (const tf2::TransformException & e) {
+    if (error != nullptr) {
+      *error = e.what();
+    }
+    return std::nullopt;
   }
 }
 

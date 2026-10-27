@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -35,12 +36,22 @@ public:
   // Throws std::runtime_error when the URDF cannot be parsed.
   void load(const std::string & urdf_xml, rr::R3vWgpuRenderer * renderer);
 
-  // Poses every instance from the latest TF of its link in `fixed_frame`.
-  // Instances stay hidden until their link has a transform, and while their
-  // link is hidden by setHiddenLinks().
+  // Poses every instance from the latest TF of its link in `fixed_frame`
+  // (see lookupLatest()). Instances stay hidden until their link has a
+  // transform, and while their link is hidden by setHiddenLinks().
   void update(
     const tf2_ros::Buffer & tf, const std::string & fixed_frame,
     rr::R3vWgpuRenderer * renderer);
+
+  // Transform of `frame` into `fixed_frame` (identity when either is empty or
+  // they are equal) from the latest TF. A link of the robot is composed of the
+  // latest pose of the URDF root and the latest transform of the link below
+  // it: one lookup through both would use their latest common time, which
+  // falls out of the TF cache for every moving link when the robot pose is
+  // stamped by a lagging clock (a simulator's) and the joints by wall time.
+  std::optional<Eigen::Isometry3d> lookupLatest(
+    const tf2_ros::Buffer & tf, const std::string & fixed_frame, const std::string & frame,
+    std::string * error = nullptr) const;
 
   // Hides every link in `links` together with all links below it in the URDF
   // tree; the others are shown again. Kept across load(). Takes effect at the
@@ -71,6 +82,7 @@ private:
   MeshLoader loader_;
   bool double_sided_;
   std::vector<Instance> instances_;
+  std::string root_;  // root link of the URDF, empty before load()
   std::unordered_map<std::string, std::vector<std::string>> children_;  // link -> child links
   std::vector<std::string> hidden_roots_;
   std::unordered_set<std::string> hidden_;  // hidden_roots_ and every link below them

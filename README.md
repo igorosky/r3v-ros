@@ -72,7 +72,7 @@ docker run ... -v /path/to/src:/robot:ro r3v-ros:jazzy
 | `~/hidden_links` | `std_msgs/String` | in |
 | `~/voxels_visible` | `std_msgs/Bool` | in |
 | `~/clear_voxels` | `std_msgs/Empty` | in |
-| `output.topic` (`/r3v/image`) + transports | `sensor_msgs/Image` | out |
+| `output.topic` (`/r3v/image`) + transports | `sensor_msgs/Image` (best effort, `output.qos`) | out |
 
 The camera is placed by `camera.position` / `camera.target`, given in
 `camera.frame` (the fixed frame by default; a robot frame makes it follow the
@@ -107,6 +107,11 @@ frames back one call late, so images lag one period (`1 / rate`).
   that only touch at an edge.
 - Voxels live in the fixed frame and accumulate over time; rays clear voxels
   they pass through.
+- Robot links (and a camera frame that is a robot link) are posed from two
+  latest lookups, fixed frame to URDF root and root to link, rather than one
+  through both: robot pose and joint states may be stamped by different
+  clocks (a simulator's lagging one and wall time), and their latest common
+  time can fall out of the TF cache.
 - A renderer failure shuts the node down so a supervisor (e.g. compose
   `restart: unless-stopped`) can restart it.
 

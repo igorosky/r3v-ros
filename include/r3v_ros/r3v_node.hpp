@@ -89,6 +89,7 @@ private:
   std::string encoding_;
   std::string output_frame_id_;
   bool lazy_;
+  std::string output_qos_;
   std::string camera_frame_;
   Eigen::Vector3d camera_position_;
   Eigen::Vector3d camera_target_;

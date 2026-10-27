@@ -101,6 +101,10 @@ void R3vNode::declareParameters()
   encoding_ = declare_parameter<std::string>("output.encoding", enc::BGR8);
   output_frame_id_ = declare_parameter<std::string>("output.frame_id", "");
   lazy_ = declare_parameter<bool>("output.lazy", true);
+  output_qos_ = declare_parameter<std::string>("output.qos", "sensor_data");
+  require(
+    output_qos_ == "sensor_data" || output_qos_ == "reliable",
+    "output.qos must be sensor_data or reliable");
   require(
     width >= 1 && width <= 8192 && height >= 1 && height <= 8192,
     "output.width and output.height must be between 1 and 8192");
@@ -319,7 +323,9 @@ void R3vNode::createInterfaces()
       controls_.clear_voxels = true;
     }, control_options);
 
-  image_pub_ = image_transport::create_publisher(this, output_topic_);
+  image_pub_ = image_transport::create_publisher(
+    this, output_topic_,
+    output_qos_ == "reliable" ? rmw_qos_profile_default : rmw_qos_profile_sensor_data);
   render_timer_ = create_wall_timer(
     std::chrono::duration<double>(1.0 / rate_), [this]() {onRender();}, render_group_);
 }
@@ -559,7 +565,8 @@ void R3vNode::tesselate(const std::vector<rr::R3vPointI> & blocks)
 bool R3vNode::cameraView(CameraView & view) const
 {
   if (camera_pose_) {
-    const auto to_fixed = lookup(camera_pose_->header.frame_id, rclcpp::Time(), 0.0);
+    const auto to_fixed =
+      robot_->lookupLatest(*tf_buffer_, fixed_frame_, camera_pose_->header.frame_id);
     if (!to_fixed) {
       return false;
     }
@@ -572,7 +579,7 @@ bool R3vNode::cameraView(CameraView & view) const
     view.up = camera.linear() * Eigen::Vector3d::UnitZ();
     return true;
   }
-  const auto to_fixed = lookup(camera_frame_, rclcpp::Time(), 0.0);
+  const auto to_fixed = robot_->lookupLatest(*tf_buffer_, fixed_frame_, camera_frame_);
   if (!to_fixed) {
     return false;
   }

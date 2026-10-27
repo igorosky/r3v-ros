@@ -39,6 +39,15 @@
       frame_id: ""
       # Only render while someone subscribes.
       lazy: true
+      # sensor_data (best effort) or reliable. Frames are large (width x height
+      # x 3..4 bytes), so DDS splits each into many fragments. With a reliable
+      # writer, a best-effort reader that loses fragments stops receiving for
+      # good (Cyclone DDS keeps the incomplete frames waiting for retransmissions
+      # it never asks for, and drops every new frame once its reassembly slots
+      # are full) until the writer restarts. A best-effort writer drops the
+      # oldest incomplete frame instead. Use reliable only if every subscriber
+      # is reliable.
+      qos: sensor_data
 
     camera:
       # Frame position and target are given in; empty means fixed_frame.

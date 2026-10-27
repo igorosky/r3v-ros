@@ -62,7 +62,7 @@
 
     voxelizer:
       # single_threaded, multi_threaded or wgpu (GPU compute).
-      backend: multi_threaded
+      backend: wgpu
       # multi_threaded worker threads, 0 = one per CPU.
       threads: 0
       # wgpu hashmap size, about 1 KiB of GPU memory each.

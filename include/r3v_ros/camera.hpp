@@ -4,19 +4,16 @@
 
 #include "r3v_ros/r3v_handles.hpp"
 
-namespace r3v_ros
-{
+namespace r3v_ros {
 
 // Where the virtual camera is, in the fixed frame (ROS, Z-up).
-struct CameraView
-{
+struct CameraView {
   Eigen::Vector3d eye;
   Eigen::Vector3d target;
   Eigen::Vector3d up;
 };
 
-struct CameraLens
-{
+struct CameraLens {
   double fov_deg;  // vertical field of view
   double near;
   double far;
@@ -26,7 +23,7 @@ struct CameraLens
 // depth range, built in the renderer world. Returns false for a degenerate
 // view (eye on target).
 bool makeCameraState(
-  const CameraView & view, const CameraLens & lens, double aspect_ratio,
-  rr::R3vCameraState & out);
+  const CameraView& view, const CameraLens& lens, double aspect_ratio,
+  rr::R3vCameraState& out);
 
 }  // namespace r3v_ros

@@ -10,16 +10,13 @@
 
 #include "r3v_ros/frames.hpp"
 
-namespace r3v_ros
-{
+namespace r3v_ros {
 
-namespace
-{
+namespace {
 
 using sensor_msgs::msg::PointField;
 
-size_t datatypeSize(uint8_t datatype)
-{
+size_t datatypeSize(uint8_t datatype) {
   switch (datatype) {
     case PointField::INT8:
     case PointField::UINT8:
@@ -39,8 +36,7 @@ size_t datatypeSize(uint8_t datatype)
 }
 
 template<typename T>
-double readAs(const uint8_t * p)
-{
+double readAs(const uint8_t* p) {
   T value;
   std::memcpy(&value, p, sizeof(T));
   return static_cast<double>(value);
@@ -50,11 +46,10 @@ double readAs(const uint8_t * p)
 class FieldReader
 {
 public:
-  FieldReader(const sensor_msgs::msg::PointCloud2 & cloud, const std::string & name)
-  {
+  FieldReader(const sensor_msgs::msg::PointCloud2& cloud, const std::string& name) {
     const auto it = std::find_if(
       cloud.fields.begin(), cloud.fields.end(),
-      [&](const PointField & field) {return field.name == name;});
+      [&](const PointField& field) { return field.name == name; });
     if (it == cloud.fields.end()) {
       throw std::runtime_error("cloud has no field '" + name + "'");
     }
@@ -66,9 +61,8 @@ public:
     datatype_ = it->datatype;
   }
 
-  double read(const uint8_t * point) const
-  {
-    const uint8_t * p = point + offset_;
+  double read(const uint8_t* point) const {
+    const uint8_t* p = point + offset_;
     switch (datatype_) {
       case PointField::INT8: return readAs<int8_t>(p);
       case PointField::UINT8: return readAs<uint8_t>(p);
@@ -89,10 +83,9 @@ private:
 }  // namespace
 
 void extractPoints(
-  const sensor_msgs::msg::PointCloud2 & cloud, const CloudConfig & config,
-  const Eigen::Isometry3d & cloud_to_fixed, const Eigen::Vector3d & sensor_origin,
-  std::vector<rv::PointF> & out)
-{
+  const sensor_msgs::msg::PointCloud2& cloud, const CloudConfig& config,
+  const Eigen::Isometry3d& cloud_to_fixed, const Eigen::Vector3d& sensor_origin,
+  std::vector<rv::PointF>& out) {
   out.clear();
   if (cloud.is_bigendian) {
     throw std::runtime_error("big endian clouds are not supported");
@@ -103,8 +96,7 @@ void extractPoints(
     return;
   }
   if (static_cast<size_t>(cloud.point_step) * width > cloud.row_step ||
-    static_cast<size_t>(cloud.row_step) * height > cloud.data.size())
-  {
+    static_cast<size_t>(cloud.row_step) * height > cloud.data.size()) {
     throw std::runtime_error("cloud data is smaller than its width, height and steps");
   }
 
@@ -120,7 +112,7 @@ void extractPoints(
   out.reserve(width * height / step);
 
   for (size_t index = 0; index < width * height; index += step) {
-    const uint8_t * point =
+    const uint8_t* point =
       cloud.data.data() + (index / width) * cloud.row_step + (index % width) * cloud.point_step;
     const Eigen::Vector3d local(x.read(point), y.read(point), z.read(point));
     if (!local.allFinite()) {
@@ -144,8 +136,8 @@ void extractPoints(
     value = std::min(value, 65535.0);
     const Eigen::Vector3d world = toRender(fixed);
     out.push_back(
-      {static_cast<float>(world.x()), static_cast<float>(world.y()),
-        static_cast<float>(world.z()), static_cast<float>(value)});
+      { static_cast<float>(world.x()), static_cast<float>(world.y()),
+        static_cast<float>(world.z()), static_cast<float>(value) });
   }
 }
 

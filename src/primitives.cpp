@@ -4,22 +4,18 @@
 #include <cmath>
 #include <utility>
 
-namespace r3v_ros
-{
+namespace r3v_ros {
 
-namespace
-{
+namespace {
 
 void addQuad(
-  Triangles & out, const Eigen::Vector3d & a, const Eigen::Vector3d & b,
-  const Eigen::Vector3d & c, const Eigen::Vector3d & d)
-{
+  Triangles& out, const Eigen::Vector3d& a, const Eigen::Vector3d& b,
+  const Eigen::Vector3d& c, const Eigen::Vector3d& d) {
   addTriangle(out, a, b, c);
   addTriangle(out, a, c, d);
 }
 
-void setVertex(float (&out)[3], const Eigen::Vector3d & v)
-{
+void setVertex(float (& out)[3], const Eigen::Vector3d& v) {
   out[0] = static_cast<float>(v.x());
   out[1] = static_cast<float>(v.y());
   out[2] = static_cast<float>(v.z());
@@ -28,9 +24,8 @@ void setVertex(float (&out)[3], const Eigen::Vector3d & v)
 }  // namespace
 
 void addTriangle(
-  Triangles & out, const Eigen::Vector3d & a, const Eigen::Vector3d & b,
-  const Eigen::Vector3d & c)
-{
+  Triangles& out, const Eigen::Vector3d& a, const Eigen::Vector3d& b,
+  const Eigen::Vector3d& c) {
   rr::R3vTriangle triangle;
   setVertex(triangle.v0, a);
   setVertex(triangle.v1, b);
@@ -38,8 +33,7 @@ void addTriangle(
   out.push_back(triangle);
 }
 
-Triangles makeBox(const Eigen::Vector3d & size)
-{
+Triangles makeBox(const Eigen::Vector3d& size) {
   const Eigen::Vector3d half = size / 2.0;
   Triangles out;
   out.reserve(12);
@@ -47,7 +41,7 @@ Triangles makeBox(const Eigen::Vector3d & size)
     // u x v = +axis
     const int u_axis = (axis + 1) % 3;
     const int v_axis = (axis + 2) % 3;
-    for (const double sign : {1.0, -1.0}) {
+    for (const double sign : { 1.0, -1.0 }) {
       Eigen::Vector3d center = Eigen::Vector3d::Zero();
       center[axis] = sign * half[axis];
       Eigen::Vector3d u = Eigen::Vector3d::Zero();
@@ -63,8 +57,7 @@ Triangles makeBox(const Eigen::Vector3d & size)
   return out;
 }
 
-Triangles makeCylinder(double radius, double length, int segments)
-{
+Triangles makeCylinder(double radius, double length, int segments) {
   const double h = length / 2.0;
   const Eigen::Vector3d top(0.0, 0.0, h);
   const Eigen::Vector3d bottom(0.0, 0.0, -h);
@@ -82,8 +75,7 @@ Triangles makeCylinder(double radius, double length, int segments)
   return out;
 }
 
-Triangles makeSphere(double radius, int stacks, int slices)
-{
+Triangles makeSphere(double radius, int stacks, int slices) {
   const auto point = [&](int stack, int slice) {
       const double theta = M_PI * stack / stacks;
       const double phi = 2.0 * M_PI * slice / slices;
@@ -113,11 +105,10 @@ Triangles makeSphere(double radius, int stacks, int slices)
   return out;
 }
 
-void scaleTriangles(Triangles & triangles, const Eigen::Vector3d & scale)
-{
+void scaleTriangles(Triangles& triangles, const Eigen::Vector3d& scale) {
   const bool mirrored = scale.x() * scale.y() * scale.z() < 0.0;
-  for (auto & triangle : triangles) {
-    for (float * vertex : {triangle.v0, triangle.v1, triangle.v2}) {
+  for (auto& triangle : triangles) {
+    for (float* vertex : { triangle.v0, triangle.v1, triangle.v2 }) {
       for (int k = 0; k < 3; ++k) {
         vertex[k] = static_cast<float>(vertex[k] * scale[k]);
       }
@@ -128,8 +119,7 @@ void scaleTriangles(Triangles & triangles, const Eigen::Vector3d & scale)
   }
 }
 
-void makeDoubleSided(Triangles & triangles)
-{
+void makeDoubleSided(Triangles& triangles) {
   const size_t count = triangles.size();
   triangles.reserve(count * 2);
   for (size_t i = 0; i < count; ++i) {

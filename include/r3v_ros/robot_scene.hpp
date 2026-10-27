@@ -20,8 +20,7 @@
 #include "r3v_ros/mesh_loader.hpp"
 #include "r3v_ros/r3v_handles.hpp"
 
-namespace r3v_ros
-{
+namespace r3v_ros {
 
 // Visuals of a URDF robot as renderer mesh instances, posed from TF.
 class RobotScene
@@ -34,14 +33,14 @@ public:
   // Replaces the robot with the one described by `urdf_xml`. The renderer
   // cannot delete assets, so instances of a previous robot are hidden.
   // Throws std::runtime_error when the URDF cannot be parsed.
-  void load(const std::string & urdf_xml, rr::R3vWgpuRenderer * renderer);
+  void load(const std::string& urdf_xml, rr::R3vWgpuRenderer* renderer);
 
   // Poses every instance from the latest TF of its link in `fixed_frame`
   // (see lookupLatest()). Instances stay hidden until their link has a
   // transform, and while their link is hidden by setHiddenLinks().
   void update(
-    const tf2_ros::Buffer & tf, const std::string & fixed_frame,
-    rr::R3vWgpuRenderer * renderer);
+    const tf2_ros::Buffer& tf, const std::string& fixed_frame,
+    rr::R3vWgpuRenderer* renderer);
 
   // Transform of `frame` into `fixed_frame` (identity when either is empty or
   // they are equal) from the latest TF. A link of the robot is composed of the
@@ -50,17 +49,16 @@ public:
   // falls out of the TF cache for every moving link when the robot pose is
   // stamped by a lagging clock (a simulator's) and the joints by wall time.
   std::optional<Eigen::Isometry3d> lookupLatest(
-    const tf2_ros::Buffer & tf, const std::string & fixed_frame, const std::string & frame,
-    std::string * error = nullptr) const;
+    const tf2_ros::Buffer& tf, const std::string& fixed_frame, const std::string& frame,
+    std::string* error = nullptr) const;
 
   // Hides every link in `links` together with all links below it in the URDF
   // tree; the others are shown again. Kept across load(). Takes effect at the
   // next update().
-  void setHiddenLinks(const std::vector<std::string> & links);
+  void setHiddenLinks(const std::vector<std::string>& links);
 
 private:
-  struct Instance
-  {
+  struct Instance {
     std::string link;
     Eigen::Isometry3d origin;  // visual in link frame
     uint64_t id;
@@ -68,11 +66,11 @@ private:
   };
 
   // Names a visual geometry (shape, size, mesh file, scale) in the cache.
-  std::string geometryKey(const urdf::Geometry & geometry) const;
+  std::string geometryKey(const urdf::Geometry& geometry) const;
 
   // Triangles of a geometry, built on first use and cached under `key`.
   // NULL (warned about once) when it cannot be built.
-  const Triangles * geometryTriangles(const urdf::Geometry & geometry, const std::string & key);
+  const Triangles * geometryTriangles(const urdf::Geometry& geometry, const std::string& key);
 
   // Expands hidden_roots_ into hidden_ over children_.
   void updateHidden();

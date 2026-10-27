@@ -20,14 +20,11 @@
 
 #include "r3v_ros/frames.hpp"
 
-namespace r3v_ros
-{
+namespace r3v_ros {
 
-namespace
-{
+namespace {
 
-Eigen::Isometry3d toEigen(const urdf::Pose & pose)
-{
+Eigen::Isometry3d toEigen(const urdf::Pose& pose) {
   Eigen::Isometry3d out = Eigen::Isometry3d::Identity();
   out.translation() = Eigen::Vector3d(pose.position.x, pose.position.y, pose.position.z);
   out.linear() =
@@ -36,18 +33,16 @@ Eigen::Isometry3d toEigen(const urdf::Pose & pose)
   return out;
 }
 
-rr::R3vTwist toTwist(const Eigen::Isometry3d & pose)
-{
+rr::R3vTwist toTwist(const Eigen::Isometry3d& pose) {
   const Eigen::Quaterniond q(pose.linear());
   const Eigen::Vector3d t = pose.translation();
   return {
-    {static_cast<float>(t.x()), static_cast<float>(t.y()), static_cast<float>(t.z())},
-    {static_cast<float>(q.x()), static_cast<float>(q.y()), static_cast<float>(q.z()),
-      static_cast<float>(q.w())}};
+    { static_cast<float>(t.x()), static_cast<float>(t.y()), static_cast<float>(t.z()) },
+    { static_cast<float>(q.x()), static_cast<float>(q.y()), static_cast<float>(q.z()),
+      static_cast<float>(q.w()) } };
 }
 
-std::string vectorKey(const urdf::Vector3 & v)
-{
+std::string vectorKey(const urdf::Vector3& v) {
   std::ostringstream out;
   out << v.x << ',' << v.y << ',' << v.z;
   return out.str();
@@ -58,24 +53,22 @@ std::string vectorKey(const urdf::Vector3 & v)
 RobotScene::RobotScene(
   rclcpp::Logger logger, rclcpp::Clock::SharedPtr clock, MeshLoader loader, bool double_sided)
 : logger_(std::move(logger)), clock_(std::move(clock)), loader_(std::move(loader)),
-  double_sided_(double_sided)
-{
+  double_sided_(double_sided) {
 }
 
-std::string RobotScene::geometryKey(const urdf::Geometry & geometry) const
-{
+std::string RobotScene::geometryKey(const urdf::Geometry& geometry) const {
   switch (geometry.type) {
     case urdf::Geometry::BOX:
-      return "box:" + vectorKey(static_cast<const urdf::Box &>(geometry).dim);
+      return "box:" + vectorKey(static_cast<const urdf::Box&>(geometry).dim);
     case urdf::Geometry::CYLINDER: {
-        const auto & cylinder = static_cast<const urdf::Cylinder &>(geometry);
+        const auto& cylinder = static_cast<const urdf::Cylinder&>(geometry);
         return "cylinder:" + std::to_string(cylinder.radius) + ',' +
                std::to_string(cylinder.length);
       }
     case urdf::Geometry::SPHERE:
-      return "sphere:" + std::to_string(static_cast<const urdf::Sphere &>(geometry).radius);
+      return "sphere:" + std::to_string(static_cast<const urdf::Sphere&>(geometry).radius);
     case urdf::Geometry::MESH: {
-        const auto & mesh = static_cast<const urdf::Mesh &>(geometry);
+        const auto& mesh = static_cast<const urdf::Mesh&>(geometry);
         return "mesh:" + mesh.filename + ':' + vectorKey(mesh.scale);
       }
     default:
@@ -83,9 +76,8 @@ std::string RobotScene::geometryKey(const urdf::Geometry & geometry) const
   }
 }
 
-const Triangles * RobotScene::geometryTriangles(
-  const urdf::Geometry & geometry, const std::string & key)
-{
+const Triangles* RobotScene::geometryTriangles(
+  const urdf::Geometry& geometry, const std::string& key) {
   if (const auto it = cache_.find(key); it != cache_.end()) {
     return &it->second;
   }
@@ -96,20 +88,20 @@ const Triangles * RobotScene::geometryTriangles(
   Triangles out;
   switch (geometry.type) {
     case urdf::Geometry::BOX: {
-        const auto & dim = static_cast<const urdf::Box &>(geometry).dim;
-        out = makeBox({dim.x, dim.y, dim.z});
+        const auto& dim = static_cast<const urdf::Box&>(geometry).dim;
+        out = makeBox({ dim.x, dim.y, dim.z });
         break;
       }
     case urdf::Geometry::CYLINDER: {
-        const auto & cylinder = static_cast<const urdf::Cylinder &>(geometry);
+        const auto& cylinder = static_cast<const urdf::Cylinder&>(geometry);
         out = makeCylinder(cylinder.radius, cylinder.length);
         break;
       }
     case urdf::Geometry::SPHERE:
-      out = makeSphere(static_cast<const urdf::Sphere &>(geometry).radius);
+      out = makeSphere(static_cast<const urdf::Sphere&>(geometry).radius);
       break;
     case urdf::Geometry::MESH: {
-        const auto & mesh = static_cast<const urdf::Mesh &>(geometry);
+        const auto& mesh = static_cast<const urdf::Mesh&>(geometry);
         const std::string path = loader_.resolve(mesh.filename);
         if (path.empty()) {
           RCLCPP_WARN(
@@ -120,12 +112,12 @@ const Triangles * RobotScene::geometryTriangles(
         }
         try {
           out = loader_.load(path);
-        } catch (const std::exception & e) {
+        } catch (const std::exception& e) {
           RCLCPP_WARN(logger_, "Cannot load mesh '%s': %s", path.c_str(), e.what());
           failed_.insert(key);
           return nullptr;
         }
-        scaleTriangles(out, {mesh.scale.x, mesh.scale.y, mesh.scale.z});
+        scaleTriangles(out, { mesh.scale.x, mesh.scale.y, mesh.scale.z });
         break;
       }
     default:
@@ -139,14 +131,13 @@ const Triangles * RobotScene::geometryTriangles(
   return &cache_.emplace(key, std::move(out)).first->second;
 }
 
-void RobotScene::load(const std::string & urdf_xml, rr::R3vWgpuRenderer * renderer)
-{
+void RobotScene::load(const std::string& urdf_xml, rr::R3vWgpuRenderer* renderer) {
   urdf::Model model;
   if (!model.initString(urdf_xml)) {
     throw std::runtime_error("cannot parse robot description");
   }
 
-  for (auto & instance : instances_) {
+  for (auto& instance : instances_) {
     if (instance.visible) {
       checkStatus(
         rr::r3v_wgpu_renderer_set_asset_visibility(renderer, instance.id, false),
@@ -162,12 +153,12 @@ void RobotScene::load(const std::string & urdf_xml, rr::R3vWgpuRenderer * render
   size_t visual_count = 0;
   std::vector<urdf::LinkSharedPtr> links;
   model.getLinks(links);
-  for (const auto & link : links) {
-    auto & children = children_[link->name];
-    for (const auto & child : link->child_links) {
+  for (const auto& link : links) {
+    auto& children = children_[link->name];
+    for (const auto& child : link->child_links) {
       children.push_back(child->name);
     }
-    for (const auto & visual : link->visual_array) {
+    for (const auto& visual : link->visual_array) {
       if (!visual || !visual->geometry) {
         continue;
       }
@@ -176,12 +167,12 @@ void RobotScene::load(const std::string & urdf_xml, rr::R3vWgpuRenderer * render
       if (geometryTriangles(*visual->geometry, key) == nullptr) {
         continue;
       }
-      by_geometry[key].push_back({link->name, toEigen(visual->origin), 0, false});
+      by_geometry[key].push_back({ link->name, toEigen(visual->origin), 0, false });
     }
   }
 
-  for (auto & [key, instances] : by_geometry) {
-    const Triangles & triangles = cache_.at(key);
+  for (auto& [key, instances] : by_geometry) {
+    const Triangles& triangles = cache_.at(key);
     MeshPtr mesh(rr::r3v_stl_mesh_from_triangles(triangles.data(), triangles.size()));
     if (!mesh) {
       throw std::runtime_error("creating mesh '" + key + "' failed: " + lastRendererError());
@@ -205,21 +196,19 @@ void RobotScene::load(const std::string & urdf_xml, rr::R3vWgpuRenderer * render
   updateHidden();
 }
 
-void RobotScene::setHiddenLinks(const std::vector<std::string> & links)
-{
+void RobotScene::setHiddenLinks(const std::vector<std::string>& links) {
   hidden_roots_ = links;
   unknown_hidden_.clear();
   updateHidden();
 }
 
-void RobotScene::updateHidden()
-{
+void RobotScene::updateHidden() {
   hidden_.clear();
   if (children_.empty()) {
     return;  // no robot yet, load() expands them
   }
   std::vector<std::string> stack;
-  for (const auto & root : hidden_roots_) {
+  for (const auto& root : hidden_roots_) {
     if (children_.count(root) == 0) {
       if (unknown_hidden_.insert(root).second) {
         RCLCPP_WARN(logger_, "Cannot hide link '%s': the robot has no such link", root.c_str());
@@ -234,16 +223,15 @@ void RobotScene::updateHidden()
     if (!hidden_.insert(link).second) {
       continue;
     }
-    const auto & children = children_.at(link);
+    const auto& children = children_.at(link);
     stack.insert(stack.end(), children.begin(), children.end());
   }
 }
 
 void RobotScene::update(
-  const tf2_ros::Buffer & tf, const std::string & fixed_frame, rr::R3vWgpuRenderer * renderer)
-{
+  const tf2_ros::Buffer& tf, const std::string& fixed_frame, rr::R3vWgpuRenderer* renderer) {
   std::string missing;
-  for (auto & instance : instances_) {
+  for (auto& instance : instances_) {
     if (hidden_.count(instance.link) != 0) {
       if (instance.visible) {
         checkStatus(
@@ -277,10 +265,9 @@ void RobotScene::update(
 }
 
 std::optional<Eigen::Isometry3d> RobotScene::lookupLatest(
-  const tf2_ros::Buffer & tf, const std::string & fixed_frame, const std::string & frame,
-  std::string * error) const
-{
-  const auto latest = [&tf](const std::string & target, const std::string & source) {
+  const tf2_ros::Buffer& tf, const std::string& fixed_frame, const std::string& frame,
+  std::string* error) const {
+  const auto latest = [&tf](const std::string& target, const std::string& source) {
       return target == source ? Eigen::Isometry3d::Identity() :
              tf2::transformToEigen(tf.lookupTransform(target, source, tf2::TimePointZero));
     };
@@ -292,7 +279,7 @@ std::optional<Eigen::Isometry3d> RobotScene::lookupLatest(
       return latest(fixed_frame, frame);  // not a link of the robot
     }
     return latest(fixed_frame, root_) * latest(root_, frame);
-  } catch (const tf2::TransformException & e) {
+  } catch (const tf2::TransformException& e) {
     if (error != nullptr) {
       *error = e.what();
     }

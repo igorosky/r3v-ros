@@ -29,8 +29,7 @@
 #include "r3v_ros/r3v_handles.hpp"
 #include "r3v_ros/robot_scene.hpp"
 
-namespace r3v_ros
-{
+namespace r3v_ros {
 
 // Renders the robot from robot_description + TF and the voxel map built
 // from any number of point clouds, and publishes it as an image stream.
@@ -40,37 +39,37 @@ namespace r3v_ros
 class R3vNode : public rclcpp::Node
 {
 public:
-  explicit R3vNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  explicit R3vNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
 
 private:
   void declareParameters();
-  uint32_t declareU32(const std::string & name, int64_t fallback);
+  uint32_t declareU32(const std::string& name, int64_t fallback);
   void createVoxelizer();
   // A new, empty voxelizer from the voxelizer.* parameters.
   VoxelizerPtr makeVoxelizer() const;
   void createRenderer();
   void createInterfaces();
 
-  void onTf(const tf2_msgs::msg::TFMessage & msg, bool is_static);
-  void onCloud(const CloudConfig & config, const sensor_msgs::msg::PointCloud2 & cloud);
-  void onRobotDescription(const std::string & urdf_xml);
-  void onHiddenLinks(const std::string & links);
+  void onTf(const tf2_msgs::msg::TFMessage& msg, bool is_static);
+  void onCloud(const CloudConfig& config, const sensor_msgs::msg::PointCloud2& cloud);
+  void onRobotDescription(const std::string& urdf_xml);
+  void onHiddenLinks(const std::string& links);
   void onRender();
   // Applies what the control topics queued since the last frame.
   void applyControls();
 
   // Transform of `frame` into the fixed frame (latest when `stamp` is 0).
   std::optional<Eigen::Isometry3d> lookup(
-    const std::string & frame, const rclcpp::Time & stamp, double timeout,
-    std::string * error = nullptr) const;
-  bool cameraView(CameraView & view) const;
+    const std::string& frame, const rclcpp::Time& stamp, double timeout,
+    std::string* error = nullptr) const;
+  bool cameraView(CameraView& view) const;
   void flushVoxels();
-  void tesselate(const std::vector<rr::R3vPointI> & blocks);
+  void tesselate(const std::vector<rr::R3vPointI>& blocks);
   // Sends every live block to the tesselator, emptied when `empty`.
   void tesselateLiveBlocks(bool empty);
   void setVoxelsVisible(bool visible);
   void clearVoxels();
-  void publish(const std::vector<uint8_t> & bgra, const rclcpp::Time & stamp);
+  void publish(const std::vector<uint8_t>& bgra, const rclcpp::Time& stamp);
 
   // Parameters.
   std::string fixed_frame_;
@@ -119,24 +118,20 @@ private:
   std::vector<rr::R3vPointI> pending_blocks_;
   // Bumped by clearVoxels(). Cloud callbacks drop blocks of an older
   // generation and replace the voxelizer before integrating again.
-  std::atomic<uint64_t> voxel_generation_{0};
+  std::atomic<uint64_t> voxel_generation_{ 0 };
   uint64_t voxelizer_generation_ = 0;  // cloud callback group only
 
   // Voxel block origin, the key of live_blocks_.
-  struct BlockKey
-  {
+  struct BlockKey {
     int32_t x;
     int32_t y;
     int32_t z;
-    bool operator==(const BlockKey & other) const
-    {
+    bool operator==(const BlockKey& other) const {
       return x == other.x && y == other.y && z == other.z;
     }
   };
-  struct BlockKeyHash
-  {
-    size_t operator()(const BlockKey & key) const
-    {
+  struct BlockKeyHash {
+    size_t operator()(const BlockKey& key) const {
       return (static_cast<size_t>(static_cast<uint32_t>(key.x)) * 73856093u) ^
              (static_cast<size_t>(static_cast<uint32_t>(key.y)) * 19349663u) ^
              (static_cast<size_t>(static_cast<uint32_t>(key.z)) * 83492791u);
@@ -144,8 +139,7 @@ private:
   };
 
   // Changes from the control topics, waiting for the next frame.
-  struct Controls
-  {
+  struct Controls {
     std::optional<geometry_msgs::msg::PoseStamped> camera_pose;
     std::optional<std::vector<std::string>> hidden_links;
     std::optional<bool> voxels_visible;

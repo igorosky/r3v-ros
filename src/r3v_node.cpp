@@ -23,16 +23,13 @@
 
 #include "r3v_ros/frames.hpp"
 
-namespace r3v_ros
-{
+namespace r3v_ros {
 
-namespace
-{
+namespace {
 
 namespace enc = sensor_msgs::image_encodings;
 
-void require(bool condition, const std::string & message)
-{
+void require(bool condition, const std::string& message) {
   if (!condition) {
     throw std::invalid_argument(message);
   }
@@ -40,9 +37,8 @@ void require(bool condition, const std::string & message)
 
 }  // namespace
 
-R3vNode::R3vNode(const rclcpp::NodeOptions & options)
-: rclcpp::Node("r3v_node", options)
-{
+R3vNode::R3vNode(const rclcpp::NodeOptions& options)
+: rclcpp::Node("r3v_node", options) {
   declareParameters();
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
@@ -71,8 +67,7 @@ R3vNode::R3vNode(const rclcpp::NodeOptions & options)
     cloud_configs_.size());
 }
 
-void R3vNode::declareParameters()
-{
+void R3vNode::declareParameters() {
   fixed_frame_ = declare_parameter<std::string>("fixed_frame", "map");
   rate_ = declare_parameter<double>("rate", 15.0);
   tf_topic_ = declare_parameter<std::string>("tf_topic", "/tf");
@@ -86,12 +81,12 @@ void R3vNode::declareParameters()
     declare_parameter<std::string>("robot_description.topic", "/robot_description");
   robot_description_file_ = declare_parameter<std::string>("robot_description.file", "");
   package_paths_ = declare_parameter<std::vector<std::string>>(
-    "robot_description.package_paths", std::vector<std::string>{});
+    "robot_description.package_paths", std::vector<std::string>{ });
   package_paths_.erase(
     std::remove(package_paths_.begin(), package_paths_.end(), ""), package_paths_.end());
   double_sided_ = declare_parameter<bool>("robot_description.double_sided", false);
   hidden_links_ = declare_parameter<std::vector<std::string>>(
-    "robot_description.hidden_links", std::vector<std::string>{});
+    "robot_description.hidden_links", std::vector<std::string>{ });
   hidden_links_.erase(
     std::remove(hidden_links_.begin(), hidden_links_.end(), ""), hidden_links_.end());
 
@@ -114,14 +109,14 @@ void R3vNode::declareParameters()
     encoding_ == enc::BGR8 || encoding_ == enc::RGB8 || encoding_ == enc::BGRA8 ||
     encoding_ == enc::RGBA8, "output.encoding must be bgr8, rgb8, bgra8 or rgba8");
 
-  const auto vector3 = [this](const std::string & name, const std::vector<double> & fallback) {
+  const auto vector3 = [this](const std::string& name, const std::vector<double>& fallback) {
       const auto v = declare_parameter<std::vector<double>>(name, fallback);
       require(v.size() == 3, name + " must have 3 elements");
       return Eigen::Vector3d(v[0], v[1], v[2]);
     };
   camera_frame_ = declare_parameter<std::string>("camera.frame", "");
-  camera_position_ = vector3("camera.position", {4.0, 4.0, 3.0});
-  camera_target_ = vector3("camera.target", {0.0, 0.0, 0.5});
+  camera_position_ = vector3("camera.position", { 4.0, 4.0, 3.0 });
+  camera_target_ = vector3("camera.target", { 0.0, 0.0, 0.5 });
   lens_.fov_deg = declare_parameter<double>("camera.fov_deg", 60.0);
   lens_.near = declare_parameter<double>("camera.near", 0.05);
   lens_.far = declare_parameter<double>("camera.far", 200.0);
@@ -142,9 +137,9 @@ void R3vNode::declareParameters()
   multipliers_.target = declareU32("voxelizer.target_multiplier", 2);
 
   const auto names = declare_parameter<std::vector<std::string>>(
-    "point_clouds.names", std::vector<std::string>{});
+    "point_clouds.names", std::vector<std::string>{ });
   std::set<std::string> seen;
-  for (const auto & name : names) {
+  for (const auto& name : names) {
     if (name.empty()) {
       continue;
     }
@@ -176,15 +171,13 @@ void R3vNode::declareParameters()
   }
 }
 
-uint32_t R3vNode::declareU32(const std::string & name, int64_t fallback)
-{
+uint32_t R3vNode::declareU32(const std::string& name, int64_t fallback) {
   const int64_t v = declare_parameter<int64_t>(name, fallback);
   require(v >= 0 && v <= std::numeric_limits<uint32_t>::max(), name + " must fit in 32 bits");
   return static_cast<uint32_t>(v);
 }
 
-void R3vNode::createVoxelizer()
-{
+void R3vNode::createVoxelizer() {
   voxelizer_backend_ = declare_parameter<std::string>("voxelizer.backend", "multi_threaded");
   voxelizer_threads_ = declare_parameter<int64_t>("voxelizer.threads", 0);
   voxelizer_buckets_ = declare_parameter<int64_t>("voxelizer.wgpu_bucket_count", 131072);
@@ -202,12 +195,11 @@ void R3vNode::createVoxelizer()
   voxelizer_ = makeVoxelizer();
 }
 
-VoxelizerPtr R3vNode::makeVoxelizer() const
-{
+VoxelizerPtr R3vNode::makeVoxelizer() const {
   const auto resolution = static_cast<float>(voxel_size_);
-  const rv::Multipliers & m = multipliers_;
+  const rv::Multipliers& m = multipliers_;
   // compress = true: blocks of 4x4x2 voxels, what the tesselator takes.
-  void * voxelizer = nullptr;
+  void* voxelizer = nullptr;
   if (voxelizer_backend_ == "single_threaded") {
     voxelizer = rv::create_single_threaded_voxelizer(
       resolution, m.intensity, m.hit, m.target, destroy_threshold_,
@@ -230,8 +222,7 @@ VoxelizerPtr R3vNode::makeVoxelizer() const
   return VoxelizerPtr(voxelizer);
 }
 
-void R3vNode::createRenderer()
-{
+void R3vNode::createRenderer() {
   renderer_.reset(rr::r3v_wgpu_renderer_create());
   if (!renderer_) {
     throw std::runtime_error(
@@ -239,7 +230,7 @@ void R3vNode::createRenderer()
             "installed and the GPU device available?): " + lastRendererError());
   }
   checkStatus(
-    rr::r3v_wgpu_renderer_configure(renderer_.get(), {width_, height_}),
+    rr::r3v_wgpu_renderer_configure(renderer_.get(), { width_, height_ }),
     "configuring the renderer");
   frame_.resize(static_cast<size_t>(width_) * height_ * 4);
 
@@ -249,12 +240,11 @@ void R3vNode::createRenderer()
   }
   checkStatus(
     rr::r3v_cpu_tesselator_configure(
-      tesselator_.get(), {static_cast<float>(voxel_size_), marching_cubes_}),
+      tesselator_.get(), { static_cast<float>(voxel_size_), marching_cubes_ }),
     "configuring the tesselator");
 }
 
-void R3vNode::createInterfaces()
-{
+void R3vNode::createInterfaces() {
   tf_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   cloud_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   render_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -264,14 +254,14 @@ void R3vNode::createInterfaces()
   tf_options.callback_group = tf_group_;
   tf_sub_ = create_subscription<tf2_msgs::msg::TFMessage>(
     tf_topic_, tf2_ros::DynamicListenerQoS(),
-    [this](tf2_msgs::msg::TFMessage::ConstSharedPtr msg) {onTf(*msg, false);}, tf_options);
+    [this](tf2_msgs::msg::TFMessage::ConstSharedPtr msg) { onTf(*msg, false); }, tf_options);
   tf_static_sub_ = create_subscription<tf2_msgs::msg::TFMessage>(
     tf_static_topic_, tf2_ros::StaticListenerQoS(),
-    [this](tf2_msgs::msg::TFMessage::ConstSharedPtr msg) {onTf(*msg, true);}, tf_options);
+    [this](tf2_msgs::msg::TFMessage::ConstSharedPtr msg) { onTf(*msg, true); }, tf_options);
 
   rclcpp::SubscriptionOptions cloud_options;
   cloud_options.callback_group = cloud_group_;
-  for (const auto & config : cloud_configs_) {
+  for (const auto& config : cloud_configs_) {
     const rclcpp::QoS qos =
       config.qos == "reliable" ? rclcpp::QoS(10) : rclcpp::QoS(rclcpp::SensorDataQoS());
     cloud_subs_.push_back(
@@ -290,7 +280,7 @@ void R3vNode::createInterfaces()
   if (robot_description_file_.empty() && !robot_description_topic_.empty()) {
     robot_description_sub_ = create_subscription<std_msgs::msg::String>(
       robot_description_topic_, rclcpp::QoS(1).reliable().transient_local(),
-      [this](std_msgs::msg::String::ConstSharedPtr msg) {onRobotDescription(msg->data);},
+      [this](std_msgs::msg::String::ConstSharedPtr msg) { onRobotDescription(msg->data); },
       render_options);
   }
   // Runtime controls only queue their change for the next onRender(). In the
@@ -308,7 +298,7 @@ void R3vNode::createInterfaces()
   }
   hidden_links_sub_ = create_subscription<std_msgs::msg::String>(
     "~/hidden_links", rclcpp::QoS(10),
-    [this](std_msgs::msg::String::ConstSharedPtr msg) {onHiddenLinks(msg->data);},
+    [this](std_msgs::msg::String::ConstSharedPtr msg) { onHiddenLinks(msg->data); },
     control_options);
   voxels_visible_sub_ = create_subscription<std_msgs::msg::Bool>(
     "~/voxels_visible", rclcpp::QoS(10),
@@ -327,24 +317,22 @@ void R3vNode::createInterfaces()
     this, output_topic_,
     output_qos_ == "reliable" ? rmw_qos_profile_default : rmw_qos_profile_sensor_data);
   render_timer_ = create_wall_timer(
-    std::chrono::duration<double>(1.0 / rate_), [this]() {onRender();}, render_group_);
+    std::chrono::duration<double>(1.0 / rate_), [this]() { onRender(); }, render_group_);
 }
 
-void R3vNode::onTf(const tf2_msgs::msg::TFMessage & msg, bool is_static)
-{
-  for (const auto & transform : msg.transforms) {
+void R3vNode::onTf(const tf2_msgs::msg::TFMessage& msg, bool is_static) {
+  for (const auto& transform : msg.transforms) {
     try {
       tf_buffer_->setTransform(transform, "r3v_node", is_static);
-    } catch (const tf2::TransformException & e) {
+    } catch (const tf2::TransformException& e) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Bad transform: %s", e.what());
     }
   }
 }
 
 std::optional<Eigen::Isometry3d> R3vNode::lookup(
-  const std::string & frame, const rclcpp::Time & stamp, double timeout,
-  std::string * error) const
-{
+  const std::string& frame, const rclcpp::Time& stamp, double timeout,
+  std::string* error) const {
   if (frame.empty() || frame == fixed_frame_) {
     return Eigen::Isometry3d::Identity();
   }
@@ -352,7 +340,7 @@ std::optional<Eigen::Isometry3d> R3vNode::lookup(
     return tf2::transformToEigen(
       tf_buffer_->lookupTransform(
         fixed_frame_, frame, stamp, rclcpp::Duration::from_seconds(timeout)));
-  } catch (const tf2::TransformException & e) {
+  } catch (const tf2::TransformException& e) {
     if (error != nullptr) {
       *error = e.what();
     }
@@ -360,14 +348,13 @@ std::optional<Eigen::Isometry3d> R3vNode::lookup(
   }
 }
 
-void R3vNode::onCloud(const CloudConfig & config, const sensor_msgs::msg::PointCloud2 & cloud)
-{
+void R3vNode::onCloud(const CloudConfig& config, const sensor_msgs::msg::PointCloud2& cloud) {
   const uint64_t generation = voxel_generation_.load();
   if (generation != voxelizer_generation_) {
     // The map was cleared: start over with an empty voxelizer.
     try {
       voxelizer_ = makeVoxelizer();
-    } catch (const std::exception & e) {
+    } catch (const std::exception& e) {
       RCLCPP_ERROR(get_logger(), "Keeping the old voxel map: %s", e.what());
     }
     voxelizer_generation_ = generation;
@@ -396,7 +383,7 @@ void R3vNode::onCloud(const CloudConfig & config, const sensor_msgs::msg::PointC
 
   try {
     extractPoints(cloud, config, *cloud_to_fixed, sensor, points_);
-  } catch (const std::exception & e) {
+  } catch (const std::exception& e) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), 5000, "Dropping point cloud '%s': %s", config.name.c_str(),
       e.what());
@@ -409,7 +396,7 @@ void R3vNode::onCloud(const CloudConfig & config, const sensor_msgs::msg::PointC
   const Eigen::Vector3d origin = toRender(sensor);
   const rv::PointF sensor_pos{
     static_cast<float>(origin.x()), static_cast<float>(origin.y()),
-    static_cast<float>(origin.z()), 0.0f};
+    static_cast<float>(origin.z()), 0.0f };
   // Clouds share the voxelizer, each with its own multipliers. Cloud
   // callbacks are mutually exclusive, so nothing runs in between.
   rv::set_multipliers(voxelizer_.get(), config.multipliers);
@@ -429,17 +416,15 @@ void R3vNode::onCloud(const CloudConfig & config, const sensor_msgs::msg::PointC
   rv::drop_update(update);
 }
 
-void R3vNode::onRobotDescription(const std::string & urdf_xml)
-{
+void R3vNode::onRobotDescription(const std::string& urdf_xml) {
   try {
     robot_->load(urdf_xml, renderer_.get());
-  } catch (const std::exception & e) {
+  } catch (const std::exception& e) {
     RCLCPP_ERROR(get_logger(), "Ignoring robot description: %s", e.what());
   }
 }
 
-void R3vNode::onHiddenLinks(const std::string & links)
-{
+void R3vNode::onHiddenLinks(const std::string& links) {
   std::vector<std::string> names;
   std::string name;
   for (const char c : links + ',') {
@@ -456,8 +441,7 @@ void R3vNode::onHiddenLinks(const std::string & links)
   controls_.hidden_links = std::move(names);
 }
 
-void R3vNode::applyControls()
-{
+void R3vNode::applyControls() {
   Controls controls;
   {
     std::lock_guard<std::mutex> lock(controls_mutex_);
@@ -469,7 +453,7 @@ void R3vNode::applyControls()
   if (controls.hidden_links) {
     robot_->setHiddenLinks(*controls.hidden_links);
     std::string list;
-    for (const auto & name : *controls.hidden_links) {
+    for (const auto& name : *controls.hidden_links) {
       list += (list.empty() ? "" : ", ") + name;
     }
     RCLCPP_INFO(get_logger(), "Hidden links: %s", list.empty() ? "none" : list.c_str());
@@ -484,16 +468,15 @@ void R3vNode::applyControls()
   }
 }
 
-void R3vNode::flushVoxels()
-{
+void R3vNode::flushVoxels() {
   blocks_.clear();
   {
     std::lock_guard<std::mutex> lock(pending_mutex_);
     blocks_.swap(pending_blocks_);
   }
   // Blocks carry their whole occupancy mask, so the last one wins.
-  for (const auto & block : blocks_) {
-    const BlockKey key{block.x, block.y, block.z};
+  for (const auto& block : blocks_) {
+    const BlockKey key{ block.x, block.y, block.z };
     if (block.i == 0) {
       live_blocks_.erase(key);
     } else {
@@ -505,19 +488,17 @@ void R3vNode::flushVoxels()
   }
 }
 
-void R3vNode::tesselateLiveBlocks(bool empty)
-{
+void R3vNode::tesselateLiveBlocks(bool empty) {
   blocks_.clear();
   blocks_.reserve(live_blocks_.size());
-  for (const auto & [key, mask] : live_blocks_) {
-    blocks_.push_back({key.x, key.y, key.z, empty ? 0u : mask});
+  for (const auto& [key, mask] : live_blocks_) {
+    blocks_.push_back({ key.x, key.y, key.z, empty ? 0u : mask });
   }
   // Empty blocks empty their chunks, which the renderer then drops.
   tesselate(blocks_);
 }
 
-void R3vNode::setVoxelsVisible(bool visible)
-{
+void R3vNode::setVoxelsVisible(bool visible) {
   if (visible == voxels_visible_) {
     return;
   }
@@ -526,8 +507,7 @@ void R3vNode::setVoxelsVisible(bool visible)
   RCLCPP_INFO(get_logger(), "%s the voxel map", visible ? "Showing" : "Hiding");
 }
 
-void R3vNode::clearVoxels()
-{
+void R3vNode::clearVoxels() {
   // Bumped before pending_blocks_ is emptied, so cloud callbacks still
   // working with the old voxelizer cannot add to it afterwards.
   ++voxel_generation_;
@@ -542,8 +522,7 @@ void R3vNode::clearVoxels()
   RCLCPP_INFO(get_logger(), "Cleared the voxel map");
 }
 
-void R3vNode::tesselate(const std::vector<rr::R3vPointI> & blocks)
-{
+void R3vNode::tesselate(const std::vector<rr::R3vPointI>& blocks) {
   if (blocks.empty()) {
     return;
   }
@@ -551,7 +530,7 @@ void R3vNode::tesselate(const std::vector<rr::R3vPointI> & blocks)
     rr::r3v_cpu_tesselator_update_input_geometry(
       tesselator_.get(), blocks.data(), blocks.size()),
     "tesselating voxels");
-  rr::R3vGeometryDelta * delta = nullptr;
+  rr::R3vGeometryDelta* delta = nullptr;
   checkStatus(
     rr::r3v_cpu_tesselator_get_output_geometry_delta(tesselator_.get(), &delta),
     "tesselating voxels");
@@ -562,8 +541,7 @@ void R3vNode::tesselate(const std::vector<rr::R3vPointI> & blocks)
   }
 }
 
-bool R3vNode::cameraView(CameraView & view) const
-{
+bool R3vNode::cameraView(CameraView& view) const {
   if (camera_pose_) {
     const auto to_fixed =
       robot_->lookupLatest(*tf_buffer_, fixed_frame_, camera_pose_->header.frame_id);
@@ -589,8 +567,7 @@ bool R3vNode::cameraView(CameraView & view) const
   return true;
 }
 
-void R3vNode::onRender()
-{
+void R3vNode::onRender() {
   using Clock = std::chrono::steady_clock;
   const auto ms = [](Clock::time_point from, Clock::time_point to) {
       return std::chrono::duration<double, std::milli>(to - from).count();
@@ -613,9 +590,8 @@ void R3vNode::onRender()
     rr::R3vCameraState state;
     if (!cameraView(view) ||
       !makeCameraState(
-        view, lens_, static_cast<double>(width_) / static_cast<double>(height_), state))
-    {
-      const std::string & frame =
+        view, lens_, static_cast<double>(width_) / static_cast<double>(height_), state)) {
+      const std::string& frame =
         camera_pose_ ? camera_pose_->header.frame_id : camera_frame_;
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 5000,
@@ -644,7 +620,7 @@ void R3vNode::onRender()
     RCLCPP_DEBUG(
       get_logger(), "Frame: voxels %.1f ms, robot %.1f ms, render %.1f ms, publish %.1f ms",
       ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, Clock::now()));
-  } catch (const std::exception & e) {
+  } catch (const std::exception& e) {
     // Renderer errors leave it unusable; stop so a supervisor can restart us.
     RCLCPP_FATAL(get_logger(), "%s", e.what());
     render_timer_->cancel();
@@ -652,8 +628,7 @@ void R3vNode::onRender()
   }
 }
 
-void R3vNode::publish(const std::vector<uint8_t> & bgra, const rclcpp::Time & stamp)
-{
+void R3vNode::publish(const std::vector<uint8_t>& bgra, const rclcpp::Time& stamp) {
   sensor_msgs::msg::Image msg;
   msg.header.stamp = stamp;
   msg.header.frame_id = output_frame_id_.empty() ? fixed_frame_ : output_frame_id_;

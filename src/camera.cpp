@@ -5,13 +5,11 @@
 
 #include "r3v_ros/frames.hpp"
 
-namespace r3v_ros
-{
+namespace r3v_ros {
 
 bool makeCameraState(
-  const CameraView & view, const CameraLens & lens, double aspect_ratio,
-  rr::R3vCameraState & out)
-{
+  const CameraView& view, const CameraLens& lens, double aspect_ratio,
+  rr::R3vCameraState& out) {
   const Eigen::Vector3d eye = toRender(view.eye);
   const Eigen::Vector3d target = toRender(view.target);
   Eigen::Vector3d up = toRender(view.up);
@@ -51,10 +49,10 @@ bool makeCameraState(
   // Eigen is column-major like view_proj[column][row].
   const Eigen::Matrix4f view_proj = (opengl_to_wgpu * projection * view_matrix).cast<float>();
   std::memcpy(out.view_proj, view_proj.data(), sizeof(out.view_proj));
-  out.position = {static_cast<float>(eye.x()), static_cast<float>(eye.y()),
-    static_cast<float>(eye.z())};
-  out.forward = {static_cast<float>(forward.x()), static_cast<float>(forward.y()),
-    static_cast<float>(forward.z())};
+  out.position = { static_cast<float>(eye.x()), static_cast<float>(eye.y()),
+    static_cast<float>(eye.z()) };
+  out.forward = { static_cast<float>(forward.x()), static_cast<float>(forward.y()),
+    static_cast<float>(forward.z()) };
   return true;
 }
 

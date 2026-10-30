@@ -19,6 +19,7 @@
 #include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/float64.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "std_msgs/msg/u_int32.hpp"
 #include "tf2_msgs/msg/tf_message.hpp"
 #if __has_include("tf2_ros/buffer.hpp")
 #include "tf2_ros/buffer.hpp"
@@ -44,18 +45,32 @@ public:
   explicit R3vNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
 
 private:
+  // What the voxelizer is made with and point clouds feed it with. Changing
+  // it at runtime starts the voxel map over.
+  struct VoxelizerSettings {
+    double resolution;
+    uint32_t destroy_threshold;
+    uint32_t construct_threshold;
+    uint32_t max_value;
+    std::vector<rv::Multipliers> multipliers;  // of every point cloud, as cloud_configs_
+  };
+
   void declareParameters();
   uint32_t declareU32(const std::string& name, int64_t fallback);
   void createVoxelizer();
-  // A new, empty voxelizer from the voxelizer.* parameters.
-  VoxelizerPtr makeVoxelizer() const;
+  // A new, empty voxelizer with `settings` and the voxelizer.* parameters.
+  VoxelizerPtr makeVoxelizer(const VoxelizerSettings& settings) const;
   void createRenderer();
   // Applies the frame size, background color and colormap depth range.
   void configureRenderer();
+  // Applies the voxel size and marching cubes.
+  void configureTesselator();
   void createInterfaces();
+  void createVoxelizerInterfaces(const rclcpp::SubscriptionOptions& options);
 
   void onTf(const tf2_msgs::msg::TFMessage& msg, bool is_static);
-  void onCloud(const CloudConfig& config, const sensor_msgs::msg::PointCloud2& cloud);
+  // `index` is the cloud's in cloud_configs_.
+  void onCloud(size_t index, const sensor_msgs::msg::PointCloud2& cloud);
   void onRobotDescription(const std::string& urdf_xml);
   void onHiddenLinks(const std::string& links);
   void onRender();
@@ -78,9 +93,12 @@ private:
   void setMarchingCubes(bool enabled);
   void setBackgroundColor(const rr::R3vVec3& color);
   void setColorDepthRange(double range);
+  // Clears the voxel map unless `settings` are the current ones.
+  void setVoxelizerSettings(const VoxelizerSettings& settings);
   void publishMarchingCubes();
   void publishBackgroundColor();
   void publishColorDepthRange();
+  void publishVoxelizerSettings();
   void publish(const std::vector<uint8_t>& bgra, const rclcpp::Time& stamp);
 
   // Parameters.
@@ -108,14 +126,15 @@ private:
   std::string camera_pose_topic_;
   double color_offset_;
   std::vector<CloudConfig> cloud_configs_;
-  double voxel_size_;
   rv::Multipliers multipliers_;  // defaults of every point cloud
   std::string voxelizer_backend_;
   int64_t voxelizer_threads_;
   int64_t voxelizer_buckets_;
-  uint32_t destroy_threshold_;
-  uint32_t construct_threshold_;
-  uint32_t max_value_;
+
+  // Current settings, only changed from the render callback group, under
+  // settings_mutex_ (which cloud callbacks read them under).
+  std::mutex settings_mutex_;
+  VoxelizerSettings voxelizer_settings_;
 
   // Declared first so they outlive every callback using them.
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -130,7 +149,10 @@ private:
   // Bumped by clearVoxels(). Cloud callbacks drop blocks of an older
   // generation and replace the voxelizer before integrating again.
   std::atomic<uint64_t> voxel_generation_{ 0 };
-  uint64_t voxelizer_generation_ = 0;  // cloud callback group only
+  // Cloud callback group only: the generation and settings voxelizer_ was
+  // made with.
+  uint64_t voxelizer_generation_ = 0;
+  VoxelizerSettings active_settings_;
 
   // Voxel block origin, the key of live_blocks_.
   struct BlockKey {
@@ -149,7 +171,13 @@ private:
     }
   };
 
-  // Changes from the control topics, waiting for the next frame.
+  // Changes from the control topics, waiting for the next frame. Settings
+  // are changed field by field, so that changes arriving together all apply.
+  struct MultipliersChange {
+    std::optional<float> intensity;
+    std::optional<uint32_t> hit;
+    std::optional<uint32_t> target;
+  };
   struct Controls {
     std::optional<geometry_msgs::msg::PoseStamped> camera_pose;
     std::optional<std::vector<std::string>> hidden_links;
@@ -158,6 +186,11 @@ private:
     std::optional<bool> marching_cubes;
     std::optional<rr::R3vVec3> background_color;
     std::optional<double> color_depth_range;
+    std::optional<double> resolution;
+    std::optional<uint32_t> destroy_threshold;
+    std::optional<uint32_t> construct_threshold;
+    std::optional<uint32_t> max_value;
+    std::unordered_map<size_t, MultipliersChange> multipliers;  // by cloud index
   };
   std::mutex controls_mutex_;
   Controls controls_;
@@ -190,10 +223,28 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr marching_cubes_sub_;
   rclcpp::Subscription<std_msgs::msg::ColorRGBA>::SharedPtr background_color_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr color_depth_range_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr resolution_sub_;
+  rclcpp::Subscription<std_msgs::msg::UInt32>::SharedPtr destroy_threshold_sub_;
+  rclcpp::Subscription<std_msgs::msg::UInt32>::SharedPtr construct_threshold_sub_;
+  rclcpp::Subscription<std_msgs::msg::UInt32>::SharedPtr max_value_sub_;
   // Current state of the settings above, transient local for late joiners.
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr marching_cubes_pub_;
   rclcpp::Publisher<std_msgs::msg::ColorRGBA>::SharedPtr background_color_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr color_depth_range_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr resolution_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr destroy_threshold_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr construct_threshold_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr max_value_pub_;
+  // Multiplier topics of every point cloud, as cloud_configs_.
+  struct MultiplierTopics {
+    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr intensity_sub;
+    rclcpp::Subscription<std_msgs::msg::UInt32>::SharedPtr hit_sub;
+    rclcpp::Subscription<std_msgs::msg::UInt32>::SharedPtr target_sub;
+    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr intensity_pub;
+    rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr hit_pub;
+    rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr target_pub;
+  };
+  std::vector<MultiplierTopics> multiplier_topics_;
   std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;
   image_transport::Publisher image_pub_;
   rclcpp::TimerBase::SharedPtr render_timer_;

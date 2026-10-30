@@ -85,7 +85,9 @@
       threads: 0
       # wgpu hashmap size, about 1 KiB of GPU memory each.
       wgpu_bucket_count: 131072
-      # Voxel edge length in meters.
+      # Voxel edge length in meters. ~/voxelizer/set_resolution
+      # (std_msgs/Float64) changes it at runtime, ~/voxelizer/get_resolution
+      # holds the current one.
       resolution: 0.1
       # Draw the voxel map; ~/voxels_visible (std_msgs/Bool) switches it at
       # runtime, ~/clear_voxels (std_msgs/Empty) forgets it. Point clouds keep
@@ -103,6 +105,10 @@
       # voxel its ray passes through. A voxel appears at construct_threshold
       # and disappears at destroy_threshold or below; values cap at max_value.
       # The three multipliers are defaults, every point cloud can set its own.
+      # The thresholds and max_value change at runtime through
+      # ~/voxelizer/set_<name> (std_msgs/UInt32), ~/voxelizer/get_<name> holds
+      # the current values. Changing any of these, or a point cloud's
+      # multipliers, clears the voxel map.
       intensity_multiplier: 1.0
       hit_multiplier: 1
       target_multiplier: 2
@@ -131,7 +137,10 @@
         intensity_field: ""
         intensity_scale: 1.0
         # Voxelizer multipliers for this cloud's points (see voxelizer);
-        # default to the voxelizer values.
+        # default to the voxelizer values. ~/point_clouds/<name>/set_<multiplier>
+        # (std_msgs/Float64 for intensity, std_msgs/UInt32 for hit and target)
+        # changes them at runtime, ~/point_clouds/<name>/get_<multiplier> holds
+        # the current values.
         # intensity_multiplier: 1.0
         # hit_multiplier: 1
         # target_multiplier: 2

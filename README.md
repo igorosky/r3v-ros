@@ -72,6 +72,10 @@ docker run ... -v /path/to/src:/robot:ro r3v-ros:jazzy
 | `~/hidden_links` | `std_msgs/String` | in |
 | `~/voxels_visible` | `std_msgs/Bool` | in |
 | `~/clear_voxels` | `std_msgs/Empty` | in |
+| `~/voxelizer/set_resolution` | `std_msgs/Float64` | in |
+| `~/voxelizer/set_destroy_threshold`, `set_construct_threshold`, `set_max_value` | `std_msgs/UInt32` | in |
+| `~/point_clouds/<name>/set_intensity_multiplier` | `std_msgs/Float64` | in |
+| `~/point_clouds/<name>/set_hit_multiplier`, `set_target_multiplier` | `std_msgs/UInt32` | in |
 | `output.topic` (`/r3v/image`) + transports | `sensor_msgs/Image` (best effort, `output.qos`) | out |
 
 The camera is placed by `camera.position` / `camera.target`, given in
@@ -96,11 +100,29 @@ state rather than adding to it, so publishing the same one again is harmless:
   `output.background_color`.
 - `~/colormap/set_depth_range` (`std_msgs/Float64`): meters over which the
   voxel colormap runs once, positive. Starts from `camera.color_depth_range`.
+- `~/voxelizer/set_resolution` (`std_msgs/Float64`): voxel edge length in
+  meters, positive. Starts from `voxelizer.resolution`.
+- `~/voxelizer/set_destroy_threshold`, `~/voxelizer/set_construct_threshold`,
+  `~/voxelizer/set_max_value` (`std_msgs/UInt32`): start from the
+  `voxelizer.*` parameters of the same name.
+- `~/point_clouds/<name>/set_intensity_multiplier` (`std_msgs/Float64`,
+  finite), `~/point_clouds/<name>/set_hit_multiplier` and
+  `~/point_clouds/<name>/set_target_multiplier` (`std_msgs/UInt32`): the
+  voxelizer multipliers of point cloud `<name>` (one of `point_clouds.names`,
+  which therefore have to be valid in topic names). Start from
+  `point_clouds.<name>.*_multiplier`.
 
-Invalid values are logged and ignored. The last three settings are published
-on `~/marching_cubes/get_enabled`, `~/background/get_color` and
-`~/colormap/get_depth_range` with a transient local QoS, so a late subscriber
-(with a transient local, reliable QoS too) gets the current state.
+The voxelizer and point cloud settings change how the map is built, so every
+change (even of a single point cloud's multiplier, all clouds share the
+voxelizer) clears the whole voxel map and starts it over from nothing.
+Changes arriving within one frame clear it once.
+
+Invalid values are logged and ignored. Every setting with a `set_*` topic is
+published on the matching `get_*` topic (`~/marching_cubes/get_enabled`,
+`~/background/get_color`, `~/colormap/get_depth_range`,
+`~/voxelizer/get_resolution`, `~/point_clouds/<name>/get_hit_multiplier`, ...)
+with a transient local QoS, so a late subscriber (with a transient local,
+reliable QoS too) gets the current state.
 
 With `output.lazy` (default) nothing is rendered while nobody subscribes.
 Frames are stamped with the time their scene was sampled. The renderer reads

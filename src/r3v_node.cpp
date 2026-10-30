@@ -40,10 +40,18 @@ bool validColor(double r, double g, double b) {
   return unit(r) && unit(g) && unit(b);
 }
 
-// The renderer takes it as a positive float.
-bool validDepthRange(double range) {
-  return range > 0.0 && range <= std::numeric_limits<float>::max() &&
-         static_cast<float>(range) > 0.0f;
+// For values the libraries take as a positive float.
+bool validPositiveFloat(double value) {
+  return value > 0.0 && value <= std::numeric_limits<float>::max() &&
+         static_cast<float>(value) > 0.0f;
+}
+
+bool validFloat(double value) {
+  return std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max();
+}
+
+bool sameMultipliers(const rv::Multipliers& a, const rv::Multipliers& b) {
+  return a.intensity == b.intensity && a.hit == b.hit && a.target == b.target;
 }
 
 }  // namespace
@@ -143,14 +151,16 @@ void R3vNode::declareParameters() {
   require(std::isfinite(color_offset_), "camera.color_offset must be finite");
   color_depth_range_ = declare_parameter<double>("camera.color_depth_range", 50.0);
   require(
-    validDepthRange(color_depth_range_),
+    validPositiveFloat(color_depth_range_),
     "camera.color_depth_range must be positive and fit in a float");
   require(
     lens_.fov_deg > 0.0 && lens_.fov_deg < 180.0, "camera.fov_deg must be between 0 and 180");
   require(lens_.near > 0.0 && lens_.far > lens_.near, "camera needs 0 < near < far");
 
-  voxel_size_ = declare_parameter<double>("voxelizer.resolution", 0.1);
-  require(voxel_size_ > 0.0, "voxelizer.resolution must be positive");
+  voxelizer_settings_.resolution = declare_parameter<double>("voxelizer.resolution", 0.1);
+  require(
+    validPositiveFloat(voxelizer_settings_.resolution),
+    "voxelizer.resolution must be positive and fit in a float");
   voxels_visible_ = declare_parameter<bool>("voxelizer.visible", true);
   marching_cubes_ = declare_parameter<bool>("voxelizer.marching_cubes", false);
   multipliers_.intensity =
@@ -177,10 +187,11 @@ void R3vNode::declareParameters() {
     config.decimation = static_cast<int>(declare_parameter<int64_t>(prefix + "decimation", 1));
     config.intensity_field = declare_parameter<std::string>(prefix + "intensity_field", "");
     config.intensity_scale = declare_parameter<double>(prefix + "intensity_scale", 1.0);
-    config.multipliers.intensity = static_cast<float>(
+    rv::Multipliers multipliers;
+    multipliers.intensity = static_cast<float>(
       declare_parameter<double>(prefix + "intensity_multiplier", multipliers_.intensity));
-    config.multipliers.hit = declareU32(prefix + "hit_multiplier", multipliers_.hit);
-    config.multipliers.target = declareU32(prefix + "target_multiplier", multipliers_.target);
+    multipliers.hit = declareU32(prefix + "hit_multiplier", multipliers_.hit);
+    multipliers.target = declareU32(prefix + "target_multiplier", multipliers_.target);
     require(!config.topic.empty(), prefix + "topic must be set");
     require(
       config.qos == "sensor_data" || config.qos == "reliable",
@@ -190,6 +201,7 @@ void R3vNode::declareParameters() {
       prefix + "needs 0 <= min_range < max_range");
     require(config.decimation >= 1, prefix + "decimation must be at least 1");
     cloud_configs_.push_back(std::move(config));
+    voxelizer_settings_.multipliers.push_back(multipliers);
   }
 }
 
@@ -203,9 +215,9 @@ void R3vNode::createVoxelizer() {
   voxelizer_backend_ = declare_parameter<std::string>("voxelizer.backend", "multi_threaded");
   voxelizer_threads_ = declare_parameter<int64_t>("voxelizer.threads", 0);
   voxelizer_buckets_ = declare_parameter<int64_t>("voxelizer.wgpu_bucket_count", 131072);
-  destroy_threshold_ = declareU32("voxelizer.destroy_threshold", 0);
-  construct_threshold_ = declareU32("voxelizer.construct_threshold", 2);
-  max_value_ = declareU32("voxelizer.max_value", 10);
+  voxelizer_settings_.destroy_threshold = declareU32("voxelizer.destroy_threshold", 0);
+  voxelizer_settings_.construct_threshold = declareU32("voxelizer.construct_threshold", 2);
+  voxelizer_settings_.max_value = declareU32("voxelizer.max_value", 10);
   require(voxelizer_threads_ >= 0, "voxelizer.threads must not be negative");
   require(
     voxelizer_buckets_ > 0 && voxelizer_buckets_ <= std::numeric_limits<uint32_t>::max(),
@@ -214,26 +226,30 @@ void R3vNode::createVoxelizer() {
     voxelizer_backend_ == "single_threaded" || voxelizer_backend_ == "multi_threaded" ||
     voxelizer_backend_ == "wgpu",
     "voxelizer.backend must be single_threaded, multi_threaded or wgpu");
-  voxelizer_ = makeVoxelizer();
+  active_settings_ = voxelizer_settings_;
+  voxelizer_ = makeVoxelizer(active_settings_);
 }
 
-VoxelizerPtr R3vNode::makeVoxelizer() const {
-  const auto resolution = static_cast<float>(voxel_size_);
+VoxelizerPtr R3vNode::makeVoxelizer(const VoxelizerSettings& settings) const {
+  const auto resolution = static_cast<float>(settings.resolution);
+  // Every cloud sets its own before adding points.
   const rv::Multipliers& m = multipliers_;
+  const uint32_t destroy = settings.destroy_threshold;
+  const uint32_t construct = settings.construct_threshold;
+  const uint32_t max_value = settings.max_value;
   // compress = true: blocks of 4x4x2 voxels, what the tesselator takes.
   void* voxelizer = nullptr;
   if (voxelizer_backend_ == "single_threaded") {
     voxelizer = rv::create_single_threaded_voxelizer(
-      resolution, m.intensity, m.hit, m.target, destroy_threshold_,
-      construct_threshold_, max_value_, true);
+      resolution, m.intensity, m.hit, m.target, destroy, construct, max_value, true);
   } else if (voxelizer_backend_ == "multi_threaded") {
     voxelizer = rv::create_multi_threaded_voxelizer(
-      resolution, m.intensity, m.hit, m.target, destroy_threshold_,
-      construct_threshold_, max_value_, true, static_cast<uintptr_t>(voxelizer_threads_));
+      resolution, m.intensity, m.hit, m.target, destroy, construct, max_value, true,
+      static_cast<uintptr_t>(voxelizer_threads_));
   } else {
     voxelizer = rv::create_wgpu_voxelizer(
-      resolution, m.intensity, m.hit, m.target, destroy_threshold_,
-      construct_threshold_, max_value_, true, static_cast<uint32_t>(voxelizer_buckets_));
+      resolution, m.intensity, m.hit, m.target, destroy, construct, max_value, true,
+      static_cast<uint32_t>(voxelizer_buckets_));
   }
   if (voxelizer == nullptr) {
     throw std::runtime_error(
@@ -258,10 +274,7 @@ void R3vNode::createRenderer() {
   if (!tesselator_) {
     throw std::runtime_error("creating the tesselator failed: " + lastRendererError());
   }
-  checkStatus(
-    rr::r3v_cpu_tesselator_configure(
-      tesselator_.get(), { static_cast<float>(voxel_size_), marching_cubes_ }),
-    "configuring the tesselator");
+  configureTesselator();
 }
 
 void R3vNode::configureRenderer() {
@@ -271,6 +284,14 @@ void R3vNode::configureRenderer() {
       renderer_.get(),
       { width_, height_, background_color_, static_cast<float>(color_depth_range_) }),
     "configuring the renderer");
+}
+
+void R3vNode::configureTesselator() {
+  // Keeps the blocks the tesselator holds.
+  checkStatus(
+    rr::r3v_cpu_tesselator_configure(
+      tesselator_.get(), { static_cast<float>(voxelizer_settings_.resolution), marching_cubes_ }),
+    "configuring the tesselator");
 }
 
 void R3vNode::createInterfaces() {
@@ -290,14 +311,15 @@ void R3vNode::createInterfaces() {
 
   rclcpp::SubscriptionOptions cloud_options;
   cloud_options.callback_group = cloud_group_;
-  for (const auto& config : cloud_configs_) {
+  for (size_t index = 0; index < cloud_configs_.size(); ++index) {
+    const CloudConfig& config = cloud_configs_[index];
     const rclcpp::QoS qos =
       config.qos == "reliable" ? rclcpp::QoS(10) : rclcpp::QoS(rclcpp::SensorDataQoS());
     cloud_subs_.push_back(
       create_subscription<sensor_msgs::msg::PointCloud2>(
         config.topic, qos,
-        [this, config](sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
-          onCloud(config, *msg);
+        [this, index](sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
+          onCloud(index, *msg);
         }, cloud_options));
     RCLCPP_INFO(
       get_logger(), "Point cloud '%s' from '%s'", config.name.c_str(),
@@ -363,7 +385,7 @@ void R3vNode::createInterfaces() {
   color_depth_range_sub_ = create_subscription<std_msgs::msg::Float64>(
     "~/colormap/set_depth_range", rclcpp::QoS(10),
     [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
-      if (!validDepthRange(msg->data)) {
+      if (!validPositiveFloat(msg->data)) {
         RCLCPP_WARN(
           get_logger(), "Ignoring colormap depth range %g: must be positive and fit in a "
           "float", msg->data);
@@ -383,12 +405,93 @@ void R3vNode::createInterfaces() {
   publishMarchingCubes();
   publishBackgroundColor();
   publishColorDepthRange();
+  createVoxelizerInterfaces(control_options);
 
   image_pub_ = image_transport::create_publisher(
     this, output_topic_,
     output_qos_ == "reliable" ? rmw_qos_profile_default : rmw_qos_profile_sensor_data);
   render_timer_ = create_wall_timer(
     std::chrono::duration<double>(1.0 / rate_), [this]() { onRender(); }, render_group_);
+}
+
+void R3vNode::createVoxelizerInterfaces(const rclcpp::SubscriptionOptions& options) {
+  // `set` queues the value in controls_. Float values failing `valid` are
+  // dropped with a warning naming `what` and `requirement`.
+  const auto float_setter = [this, &options](
+    const std::string& topic, const std::string& what, bool (*valid)(double),
+    const std::string& requirement, auto set) {
+      return create_subscription<std_msgs::msg::Float64>(
+        topic, rclcpp::QoS(10),
+        [this, what, valid, requirement, set](std_msgs::msg::Float64::ConstSharedPtr msg) {
+          if (!valid(msg->data)) {
+            RCLCPP_WARN(
+              get_logger(), "Ignoring %s %g: %s", what.c_str(), msg->data, requirement.c_str());
+            return;
+          }
+          std::lock_guard<std::mutex> lock(controls_mutex_);
+          set(controls_, msg->data);
+        }, options);
+    };
+  const auto u32_setter = [this, &options](const std::string& topic, auto set) {
+      return create_subscription<std_msgs::msg::UInt32>(
+        topic, rclcpp::QoS(10),
+        [this, set](std_msgs::msg::UInt32::ConstSharedPtr msg) {
+          std::lock_guard<std::mutex> lock(controls_mutex_);
+          set(controls_, msg->data);
+        }, options);
+    };
+
+  resolution_sub_ = float_setter(
+    "~/voxelizer/set_resolution", "voxelizer resolution", validPositiveFloat,
+    "must be positive and fit in a float",
+    [](Controls& controls, double value) { controls.resolution = value; });
+  destroy_threshold_sub_ = u32_setter(
+    "~/voxelizer/set_destroy_threshold",
+    [](Controls& controls, uint32_t value) { controls.destroy_threshold = value; });
+  construct_threshold_sub_ = u32_setter(
+    "~/voxelizer/set_construct_threshold",
+    [](Controls& controls, uint32_t value) { controls.construct_threshold = value; });
+  max_value_sub_ = u32_setter(
+    "~/voxelizer/set_max_value",
+    [](Controls& controls, uint32_t value) { controls.max_value = value; });
+
+  const rclcpp::QoS state_qos = rclcpp::QoS(1).reliable().transient_local();
+  resolution_pub_ =
+    create_publisher<std_msgs::msg::Float64>("~/voxelizer/get_resolution", state_qos);
+  destroy_threshold_pub_ =
+    create_publisher<std_msgs::msg::UInt32>("~/voxelizer/get_destroy_threshold", state_qos);
+  construct_threshold_pub_ =
+    create_publisher<std_msgs::msg::UInt32>("~/voxelizer/get_construct_threshold", state_qos);
+  max_value_pub_ =
+    create_publisher<std_msgs::msg::UInt32>("~/voxelizer/get_max_value", state_qos);
+
+  for (size_t index = 0; index < cloud_configs_.size(); ++index) {
+    const std::string& name = cloud_configs_[index].name;
+    const std::string prefix = "~/point_clouds/" + name + "/";
+    MultiplierTopics topics;
+    topics.intensity_sub = float_setter(
+      prefix + "set_intensity_multiplier", "point cloud '" + name + "' intensity multiplier",
+      validFloat, "must be finite and fit in a float",
+      [index](Controls& controls, double value) {
+        controls.multipliers[index].intensity = static_cast<float>(value);
+      });
+    topics.hit_sub = u32_setter(
+      prefix + "set_hit_multiplier",
+      [index](Controls& controls, uint32_t value) { controls.multipliers[index].hit = value; });
+    topics.target_sub = u32_setter(
+      prefix + "set_target_multiplier",
+      [index](Controls& controls, uint32_t value) {
+        controls.multipliers[index].target = value;
+      });
+    topics.intensity_pub =
+      create_publisher<std_msgs::msg::Float64>(prefix + "get_intensity_multiplier", state_qos);
+    topics.hit_pub =
+      create_publisher<std_msgs::msg::UInt32>(prefix + "get_hit_multiplier", state_qos);
+    topics.target_pub =
+      create_publisher<std_msgs::msg::UInt32>(prefix + "get_target_multiplier", state_qos);
+    multiplier_topics_.push_back(std::move(topics));
+  }
+  publishVoxelizerSettings();
 }
 
 void R3vNode::onTf(const tf2_msgs::msg::TFMessage& msg, bool is_static) {
@@ -419,14 +522,30 @@ std::optional<Eigen::Isometry3d> R3vNode::lookup(
   }
 }
 
-void R3vNode::onCloud(const CloudConfig& config, const sensor_msgs::msg::PointCloud2& cloud) {
-  const uint64_t generation = voxel_generation_.load();
+void R3vNode::onCloud(size_t index, const sensor_msgs::msg::PointCloud2& cloud) {
+  const CloudConfig& config = cloud_configs_[index];
+  uint64_t generation = 0;
+  {
+    // Settings change before the generation does, so a new generation comes
+    // with its settings.
+    std::lock_guard<std::mutex> lock(settings_mutex_);
+    generation = voxel_generation_.load();
+    if (generation != voxelizer_generation_) {
+      active_settings_ = voxelizer_settings_;
+    }
+  }
   if (generation != voxelizer_generation_) {
-    // The map was cleared: start over with an empty voxelizer.
+    // The map was cleared or its settings changed: start over with an empty
+    // voxelizer. The old one goes first, a wgpu one holds GPU memory.
+    voxelizer_.reset();
     try {
-      voxelizer_ = makeVoxelizer();
+      voxelizer_ = makeVoxelizer(active_settings_);
     } catch (const std::exception& e) {
-      RCLCPP_ERROR(get_logger(), "Keeping the old voxel map: %s", e.what());
+      // The next cloud tries again.
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 5000, "Dropping point cloud '%s': %s", config.name.c_str(),
+        e.what());
+      return;
     }
     voxelizer_generation_ = generation;
   }
@@ -470,7 +589,7 @@ void R3vNode::onCloud(const CloudConfig& config, const sensor_msgs::msg::PointCl
     static_cast<float>(origin.z()), 0.0f };
   // Clouds share the voxelizer, each with its own multipliers. Cloud
   // callbacks are mutually exclusive, so nothing runs in between.
-  rv::set_multipliers(voxelizer_.get(), config.multipliers);
+  rv::set_multipliers(voxelizer_.get(), active_settings_.multipliers[index]);
   const rv::VoxelsUpdate update =
     rv::add_points(voxelizer_.get(), sensor_pos, points_.data(), points_.size());
   if (update.len > 0) {
@@ -534,6 +653,20 @@ void R3vNode::applyControls() {
   if (controls.clear_voxels) {
     clearVoxels();
   }
+  VoxelizerSettings settings = voxelizer_settings_;
+  settings.resolution = controls.resolution.value_or(settings.resolution);
+  settings.destroy_threshold = controls.destroy_threshold.value_or(settings.destroy_threshold);
+  settings.construct_threshold =
+    controls.construct_threshold.value_or(settings.construct_threshold);
+  settings.max_value = controls.max_value.value_or(settings.max_value);
+  for (const auto& [index, change] : controls.multipliers) {
+    rv::Multipliers& m = settings.multipliers[index];
+    m.intensity = change.intensity.value_or(m.intensity);
+    m.hit = change.hit.value_or(m.hit);
+    m.target = change.target.value_or(m.target);
+  }
+  // Clears the map too, so also before marching cubes and the visibility.
+  setVoxelizerSettings(settings);
   // Before the visibility, which would tesselate the shown map in the old mode.
   if (controls.marching_cubes) {
     setMarchingCubes(*controls.marching_cubes);
@@ -638,6 +771,43 @@ void R3vNode::setColorDepthRange(double range) {
   RCLCPP_INFO(get_logger(), "Colormap depth range %g m", range);
 }
 
+void R3vNode::setVoxelizerSettings(const VoxelizerSettings& settings) {
+  const VoxelizerSettings& old = voxelizer_settings_;
+  const bool same_multipliers = std::equal(
+    settings.multipliers.begin(), settings.multipliers.end(), old.multipliers.begin(),
+    old.multipliers.end(), sameMultipliers);
+  if (settings.resolution == old.resolution &&
+    settings.destroy_threshold == old.destroy_threshold &&
+    settings.construct_threshold == old.construct_threshold &&
+    settings.max_value == old.max_value && same_multipliers) {
+    return;
+  }
+  const bool new_resolution = settings.resolution != old.resolution;
+  {
+    std::lock_guard<std::mutex> lock(settings_mutex_);
+    voxelizer_settings_ = settings;
+  }
+  // After the settings: cloud callbacks seeing the new generation make the
+  // new voxelizer with them. The tesselator gets the new voxel size once the
+  // renderer dropped every chunk.
+  clearVoxels();
+  if (new_resolution) {
+    configureTesselator();
+  }
+  publishVoxelizerSettings();
+  RCLCPP_INFO(
+    get_logger(), "Voxelizer: resolution %g m, destroy threshold %u, construct threshold %u, "
+    "max value %u", settings.resolution, settings.destroy_threshold,
+    settings.construct_threshold, settings.max_value);
+  for (size_t index = 0; index < cloud_configs_.size(); ++index) {
+    const rv::Multipliers& m = settings.multipliers[index];
+    RCLCPP_INFO(
+      get_logger(), "Point cloud '%s': intensity multiplier %g, hit multiplier %u, "
+      "target multiplier %u", cloud_configs_[index].name.c_str(),
+      static_cast<double>(m.intensity), m.hit, m.target);
+  }
+}
+
 void R3vNode::publishMarchingCubes() {
   std_msgs::msg::Bool msg;
   msg.data = marching_cubes_;
@@ -657,6 +827,30 @@ void R3vNode::publishColorDepthRange() {
   std_msgs::msg::Float64 msg;
   msg.data = color_depth_range_;
   color_depth_range_pub_->publish(msg);
+}
+
+void R3vNode::publishVoxelizerSettings() {
+  const VoxelizerSettings& settings = voxelizer_settings_;
+  std_msgs::msg::Float64 f64;
+  std_msgs::msg::UInt32 u32;
+  f64.data = settings.resolution;
+  resolution_pub_->publish(f64);
+  u32.data = settings.destroy_threshold;
+  destroy_threshold_pub_->publish(u32);
+  u32.data = settings.construct_threshold;
+  construct_threshold_pub_->publish(u32);
+  u32.data = settings.max_value;
+  max_value_pub_->publish(u32);
+  for (size_t index = 0; index < multiplier_topics_.size(); ++index) {
+    const rv::Multipliers& m = settings.multipliers[index];
+    const MultiplierTopics& topics = multiplier_topics_[index];
+    f64.data = m.intensity;
+    topics.intensity_pub->publish(f64);
+    u32.data = m.hit;
+    topics.hit_pub->publish(u32);
+    u32.data = m.target;
+    topics.target_pub->publish(u32);
+  }
 }
 
 void R3vNode::tesselate(const std::vector<rr::R3vPointI>& blocks) {

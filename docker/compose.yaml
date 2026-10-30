@@ -1,30 +1,53 @@
-# docker compose -f docker/compose.yaml up --build
+# Everything in one container (both nodes, one process):
+#   docker compose -f docker/compose.yaml up --build
+# Split, e.g. the voxelizer on the robot and the renderer on a base station
+# (the same image and config file on both):
+#   docker compose -f docker/compose.yaml up voxelizer
+#   docker compose -f docker/compose.yaml up renderer
+# Name the service: `--profile robot up` would start `r3v` too, which has no
+# profile.
+x-r3v: &r3v
+  image: r3v-ros:${ROS_DISTRO:-jazzy}
+  build:
+    context: ..
+    args:
+      ROS_DISTRO: ${ROS_DISTRO:-jazzy}
+  # DDS discovery and shared memory transport with the host's ROS graph.
+  network_mode: host
+  ipc: host
+  environment:
+    ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+  # Intel / AMD GPUs. Remove for NVIDIA (see below) or to render on the CPU.
+  devices:
+    - /dev/dri:/dev/dri
+  volumes:
+    - ../config/r3v.yaml:/config/r3v.yaml:ro
+    # Meshes of robots whose packages are not installed in the image; list
+    # /robot in robot_description.package_paths.
+    # - /path/to/dir/holding/robot_description_packages:/robot:ro
+  restart: unless-stopped
+  # NVIDIA GPUs (needs the NVIDIA container toolkit):
+  # deploy:
+  #   resources:
+  #     reservations:
+  #       devices:
+  #         - driver: nvidia
+  #           count: all
+  #           capabilities: [gpu, graphics]
+
 services:
   r3v:
-    image: r3v-ros:${ROS_DISTRO:-jazzy}
-    build:
-      context: ..
-      args:
-        ROS_DISTRO: ${ROS_DISTRO:-jazzy}
-    # DDS discovery and shared memory transport with the host's ROS graph.
-    network_mode: host
-    ipc: host
-    environment:
-      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
-    # Intel / AMD GPUs. Remove for NVIDIA (see below) or to render on the CPU.
-    devices:
-      - /dev/dri:/dev/dri
-    volumes:
-      - ../config/r3v.yaml:/config/r3v.yaml:ro
-      # Meshes of robots whose packages are not installed in the image; list
-      # /robot in robot_description.package_paths.
-      # - /path/to/dir/holding/robot_description_packages:/robot:ro
-    restart: unless-stopped
-    # NVIDIA GPUs (needs the NVIDIA container toolkit):
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu, graphics]
+    <<: *r3v
+
+  # Point clouds and TF in, the voxel stream out. The wgpu backend (the
+  # default in config/r3v.yaml) needs the GPU; the CPU backends do not.
+  voxelizer:
+    <<: *r3v
+    profiles: [robot]
+    command: [ros2, launch, r3v_ros, voxelizer.launch.py, config:=/config/r3v.yaml]
+
+  # The voxel stream, TF and robot_description in, images out.
+  renderer:
+    <<: *r3v
+    profiles: [station]
+    command: [ros2, launch, r3v_ros, renderer.launch.py, config:=/config/r3v.yaml]

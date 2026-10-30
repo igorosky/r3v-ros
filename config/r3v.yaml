@@ -1,16 +1,120 @@
-# r3v_node configuration. Every key is optional; the values below are the
-# defaults unless noted. Use floats (1.0, not 1) for floating point values.
-# Lists cannot be empty in ROS parameter files: leave a list out instead.
+# Configuration of both r3v_ros nodes, r3v_voxelizer and r3v_renderer. Every
+# launch file (r3v, voxelizer and renderer) takes this one file, so the same
+# file can be copied to every machine. Every key is optional; the values below
+# are the defaults unless noted. Use floats (1.0, not 1) for floating point
+# values. Lists cannot be empty in ROS parameter files: leave a list out
+# instead.
+
+# Read by both nodes; where they run apart, these have to match.
 /**:
   ros__parameters:
     # Frame everything is rendered in (point clouds accumulate in it too).
     fixed_frame: map
-    # Frames per second.
-    rate: 15.0
     tf_topic: /tf
     tf_static_topic: /tf_static
+    # Written as flat keys: launch_ros merges the sections of a file key by
+    # key at the top level only, so a voxel_stream group here would be
+    # replaced by the voxel_stream groups of the nodes below.
+    #
+    # r3v_ros/msg/VoxelMapUpdate from the voxelizer to the renderers.
+    voxel_stream.topic: /r3v/voxels
+    # Messages kept for a subscriber that is behind (reliable, keep last).
+    # Losing more makes it ask for the whole map again.
+    voxel_stream.depth: 100
+
+/**/r3v_voxelizer:
+  ros__parameters:
     # How long a point cloud waits for its transform, in seconds.
     tf_timeout: 0.1
+
+    voxel_stream:
+      # Messages per second at most: the blocks the point clouds changed
+      # meanwhile go out together.
+      rate: 15.0
+      # zstd or none; the r3v launch file (both nodes in one process) sets
+      # none.
+      compression: zstd
+      compression_level: 1
+      # Seconds without a message after which an empty one goes out, so that
+      # renderers notice a restart and can ask for the whole map.
+      heartbeat_period: 1.0
+
+    voxelizer:
+      # single_threaded, multi_threaded or wgpu (GPU compute).
+      backend: wgpu
+      # multi_threaded worker threads, 0 = one per CPU.
+      threads: 0
+      # wgpu hashmap size, about 1 KiB of GPU memory each.
+      wgpu_bucket_count: 131072
+      # Voxel edge length in meters. ~/set_resolution (std_msgs/Float64)
+      # changes it at runtime, ~/get_resolution holds the current one.
+      resolution: 0.1
+      # Every point adds trunc(intensity * intensity_multiplier) *
+      # target_multiplier to the voxel it hits and subtracts
+      # trunc(intensity * intensity_multiplier) * hit_multiplier from every
+      # voxel its ray passes through. A voxel appears at construct_threshold
+      # and disappears at destroy_threshold or below; values cap at max_value.
+      # The three multipliers are defaults, every point cloud can set its own.
+      # The thresholds and max_value change at runtime through
+      # ~/set_<name> (std_msgs/UInt32), ~/get_<name> holds the current
+      # values. Changing any of these, or a point cloud's multipliers, clears
+      # the voxel map (so does ~/clear_voxels, std_msgs/Empty).
+      intensity_multiplier: 1.0
+      hit_multiplier: 1
+      target_multiplier: 2
+      destroy_threshold: 0
+      construct_threshold: 2
+      max_value: 10
+
+    point_clouds:
+      # Any number of sensor_msgs/PointCloud2 inputs, each configured under
+      # its name below. Leave names out for none (the default; lidar is an
+      # example).
+      names: [lidar]
+      lidar:
+        topic: /points
+        # sensor_data (best effort, works with any publisher) or reliable.
+        qos: sensor_data
+        # Frame rays start from; empty means the cloud's header frame.
+        sensor_frame: ""
+        # Points closer or farther from the sensor are ignored (meters).
+        min_range: 0.0
+        max_range: 30.0
+        # Use every n-th point.
+        decimation: 1
+        # Field scaling each point's weight; empty gives every point
+        # intensity_scale.
+        intensity_field: ""
+        intensity_scale: 1.0
+        # Voxelizer multipliers for this cloud's points (see voxelizer);
+        # default to the voxelizer values. ~/point_clouds/<name>/set_<multiplier>
+        # (std_msgs/Float64 for intensity, std_msgs/UInt32 for hit and target)
+        # changes them at runtime, ~/point_clouds/<name>/get_<multiplier> holds
+        # the current values.
+        # intensity_multiplier: 1.0
+        # hit_multiplier: 1
+        # target_multiplier: 2
+      # depth_camera:
+      #   topic: /camera/depth/points
+      #   max_range: 5.0
+      #   # Noisier, so it builds voxels slower than the lidar.
+      #   target_multiplier: 1
+
+/**/r3v_renderer:
+  ros__parameters:
+    # Render at start. A disabled renderer drops TF, the voxel stream and
+    # robot_description and renders nothing; ~/set_enabled (std_msgs/Bool)
+    # switches it at runtime, ~/get_enabled holds the current state.
+    enabled: true
+    # Frames per second.
+    rate: 15.0
+
+    voxel_stream:
+      # Where the voxelizer takes requests for the whole map: its
+      # ~/request_full_sync.
+      request_topic: /r3v_voxelizer/request_full_sync
+      # Seconds between requests until the whole map arrives.
+      sync_retry: 1.0
 
     robot_description:
       # std_msgs/String, as published by robot_state_publisher.
@@ -78,20 +182,9 @@
       # holds the current one.
       color_depth_range: 50.0
 
-    voxelizer:
-      # single_threaded, multi_threaded or wgpu (GPU compute).
-      backend: wgpu
-      # multi_threaded worker threads, 0 = one per CPU.
-      threads: 0
-      # wgpu hashmap size, about 1 KiB of GPU memory each.
-      wgpu_bucket_count: 131072
-      # Voxel edge length in meters. ~/voxelizer/set_resolution
-      # (std_msgs/Float64) changes it at runtime, ~/voxelizer/get_resolution
-      # holds the current one.
-      resolution: 0.1
+    voxels:
       # Draw the voxel map; ~/voxels_visible (std_msgs/Bool) switches it at
-      # runtime, ~/clear_voxels (std_msgs/Empty) forgets it. Point clouds keep
-      # building the map while it is hidden.
+      # runtime. The voxelizer keeps building the map while it is hidden.
       visible: true
       # Smooth the voxel surface with marching cubes instead of drawing the
       # voxel faces. Closes the gaps a thin, steep surface (e.g. ground seen
@@ -99,53 +192,3 @@
       # ~/marching_cubes/set_enabled (std_msgs/Bool) switches it at runtime,
       # ~/marching_cubes/get_enabled holds the current state.
       marching_cubes: false
-      # Every point adds trunc(intensity * intensity_multiplier) *
-      # target_multiplier to the voxel it hits and subtracts
-      # trunc(intensity * intensity_multiplier) * hit_multiplier from every
-      # voxel its ray passes through. A voxel appears at construct_threshold
-      # and disappears at destroy_threshold or below; values cap at max_value.
-      # The three multipliers are defaults, every point cloud can set its own.
-      # The thresholds and max_value change at runtime through
-      # ~/voxelizer/set_<name> (std_msgs/UInt32), ~/voxelizer/get_<name> holds
-      # the current values. Changing any of these, or a point cloud's
-      # multipliers, clears the voxel map.
-      intensity_multiplier: 1.0
-      hit_multiplier: 1
-      target_multiplier: 2
-      destroy_threshold: 0
-      construct_threshold: 2
-      max_value: 10
-
-    point_clouds:
-      # Any number of sensor_msgs/PointCloud2 inputs, each configured under
-      # its name below. Leave names out for none (the default; lidar is an
-      # example).
-      names: [lidar]
-      lidar:
-        topic: /points
-        # sensor_data (best effort, works with any publisher) or reliable.
-        qos: sensor_data
-        # Frame rays start from; empty means the cloud's header frame.
-        sensor_frame: ""
-        # Points closer or farther from the sensor are ignored (meters).
-        min_range: 0.0
-        max_range: 30.0
-        # Use every n-th point.
-        decimation: 1
-        # Field scaling each point's weight; empty gives every point
-        # intensity_scale.
-        intensity_field: ""
-        intensity_scale: 1.0
-        # Voxelizer multipliers for this cloud's points (see voxelizer);
-        # default to the voxelizer values. ~/point_clouds/<name>/set_<multiplier>
-        # (std_msgs/Float64 for intensity, std_msgs/UInt32 for hit and target)
-        # changes them at runtime, ~/point_clouds/<name>/get_<multiplier> holds
-        # the current values.
-        # intensity_multiplier: 1.0
-        # hit_multiplier: 1
-        # target_multiplier: 2
-      # depth_camera:
-      #   topic: /camera/depth/points
-      #   max_range: 5.0
-      #   # Noisier, so it builds voxels slower than the lidar.
-      #   target_multiplier: 1

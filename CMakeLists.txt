@@ -8,8 +8,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
-add_compile_options(-std=c++17 -Wall -Wextra -Wpedantic -pedantic-errors -Wdeprecated -Wc++17-compat -Wconversion -Wsign-conversion
-  -Wpessimizing-move -Werror)
+# Only for our targets: the generated message code is C too and does not
+# build with all of them.
+set(R3V_ROS_COMPILE_OPTIONS -Wall -Wextra -Wpedantic -pedantic-errors -Wdeprecated
+  -Wc++17-compat -Wconversion -Wsign-conversion -Wpessimizing-move -Werror)
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
@@ -17,6 +19,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -26,6 +29,15 @@ find_package(tf2_ros REQUIRED)
 find_package(urdf REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(assimp REQUIRED)
+# Ubuntu's libzstd-dev has no CMake package before 24.04.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  msg/FullSyncRequest.msg
+  msg/VoxelMapUpdate.msg
+  DEPENDENCIES std_msgs)
+rosidl_get_typesupport_target(R3V_ROS_MSGS_TARGET ${PROJECT_NAME} rosidl_typesupport_cpp)
 
 include(cmake/r3v_rust.cmake)
 r3v_add_rust_library(renderer
@@ -48,43 +60,69 @@ set(R3V_ROS_DEPENDENCIES
   tf2_ros
   urdf)
 
-add_library(r3v_ros_component SHARED
-  src/camera.cpp
-  src/cloud_processor.cpp
-  src/mesh_loader.cpp
-  src/primitives.cpp
-  src/r3v_handles.cpp
-  src/r3v_node.cpp
-  src/robot_scene.cpp)
-target_include_directories(r3v_ros_component PUBLIC
+# Shared by both nodes: the voxel stream and node helpers.
+add_library(r3v_ros_common SHARED
+  src/node_common.cpp
+  src/voxel_map.cpp
+  src/voxel_stream.cpp)
+target_include_directories(r3v_ros_common PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
-ament_target_dependencies(r3v_ros_component ${R3V_ROS_DEPENDENCIES})
+target_compile_options(r3v_ros_common PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
+ament_target_dependencies(r3v_ros_common rclcpp std_msgs tf2 tf2_msgs tf2_ros)
+target_link_libraries(r3v_ros_common "${R3V_ROS_MSGS_TARGET}" PkgConfig::ZSTD)
+
+add_library(r3v_voxelizer_component SHARED
+  src/cloud_processor.cpp
+  src/voxelizer_node.cpp)
+target_compile_options(r3v_voxelizer_component PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
+ament_target_dependencies(r3v_voxelizer_component ${R3V_ROS_DEPENDENCIES})
+target_link_libraries(r3v_voxelizer_component
+  r3v_ros_common
+  Eigen3::Eigen
+  r3v::voxelizer)
+add_dependencies(r3v_voxelizer_component voxelizer_cargo)
+rclcpp_components_register_nodes(r3v_voxelizer_component "r3v_ros::VoxelizerNode")
+
+add_library(r3v_renderer_component SHARED
+  src/camera.cpp
+  src/mesh_loader.cpp
+  src/primitives.cpp
+  src/renderer_handles.cpp
+  src/renderer_node.cpp
+  src/robot_scene.cpp)
+target_compile_options(r3v_renderer_component PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
+ament_target_dependencies(r3v_renderer_component ${R3V_ROS_DEPENDENCIES})
 if(TARGET assimp::assimp)
   set(R3V_ASSIMP_LIBRARIES assimp::assimp)
 else()
-  target_include_directories(r3v_ros_component PRIVATE ${ASSIMP_INCLUDE_DIRS})
+  target_include_directories(r3v_renderer_component PRIVATE ${ASSIMP_INCLUDE_DIRS})
   set(R3V_ASSIMP_LIBRARIES ${ASSIMP_LIBRARIES})
 endif()
-target_link_libraries(r3v_ros_component
+target_link_libraries(r3v_renderer_component
+  r3v_ros_common
   Eigen3::Eigen
   ${R3V_ASSIMP_LIBRARIES}
-  r3v::renderer
-  r3v::voxelizer)
-add_dependencies(r3v_ros_component renderer_cargo voxelizer_cargo)
-set_target_properties(r3v_ros_component PROPERTIES INSTALL_RPATH "$ORIGIN")
-rclcpp_components_register_nodes(r3v_ros_component "r3v_ros::R3vNode")
+  r3v::renderer)
+add_dependencies(r3v_renderer_component renderer_cargo)
+rclcpp_components_register_nodes(r3v_renderer_component "r3v_ros::RendererNode")
 
-add_executable(r3v_node src/main.cpp)
-ament_target_dependencies(r3v_node ${R3V_ROS_DEPENDENCIES})
-target_link_libraries(r3v_node r3v_ros_component Eigen3::Eigen)
-set_target_properties(r3v_node PROPERTIES INSTALL_RPATH "$ORIGIN/..")
+set_target_properties(r3v_ros_common r3v_voxelizer_component r3v_renderer_component
+  PROPERTIES INSTALL_RPATH "$ORIGIN")
 
-install(TARGETS r3v_ros_component
+add_executable(r3v_voxelizer_node src/voxelizer_main.cpp)
+add_executable(r3v_renderer_node src/renderer_main.cpp)
+foreach(node voxelizer renderer)
+  target_compile_options(r3v_${node}_node PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
+  target_link_libraries(r3v_${node}_node r3v_${node}_component)
+  set_target_properties(r3v_${node}_node PROPERTIES INSTALL_RPATH "$ORIGIN/..")
+endforeach()
+
+install(TARGETS r3v_ros_common r3v_voxelizer_component r3v_renderer_component
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
-install(TARGETS r3v_node DESTINATION lib/${PROJECT_NAME})
+install(TARGETS r3v_voxelizer_node r3v_renderer_node DESTINATION lib/${PROJECT_NAME})
 install(FILES "${renderer_LIBRARY}" "${voxelizer_LIBRARY}" DESTINATION lib)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
@@ -93,9 +131,14 @@ if(BUILD_TESTING)
   # bindings.
   find_package(ament_cmake_cpplint REQUIRED)
   find_package(ament_cmake_uncrustify REQUIRED)
-  ament_cpplint(src include)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_cpplint(src include test)
   ament_uncrustify(CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/uncrustify.cfg"
-    src include)
+    src include test)
+  ament_add_gtest(test_voxel_stream test/test_voxel_stream.cpp)
+  target_compile_options(test_voxel_stream PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
+  target_link_libraries(test_voxel_stream r3v_ros_common)
 endif()
 
+ament_export_dependencies(rosidl_default_runtime)
 ament_package()

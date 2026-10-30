@@ -133,7 +133,11 @@ docker run ... -v /path/to/src:/robot:ro r3v-ros:jazzy
 | `~/voxels_visible` | `std_msgs/Bool` | in |
 | `~/marching_cubes/set_enabled` | `std_msgs/Bool` | in |
 | `~/background/set_color` | `std_msgs/ColorRGBA` | in |
-| `~/colormap/set_depth_range` | `std_msgs/Float64` | in |
+| `~/colormap/set_depth_range`, `set_color_offset` | `std_msgs/Float64` | in |
+| `~/colormap/set_mode` | `std_msgs/String` | in |
+| `~/colormap/set_height_relative` | `std_msgs/Bool` | in |
+| `~/colormap/set_height_offset`, `set_height_scale` | `std_msgs/Float64` | in |
+| `~/colormap/set_height_bands` | `std_msgs/UInt32` | in |
 | `voxel_stream.request_topic` (`/r3v_voxelizer/request_full_sync`) | `r3v_ros/FullSyncRequest` | out |
 | `output.topic` (`/r3v/image`) + transports | `sensor_msgs/Image` (best effort, `output.qos`) | out |
 
@@ -182,11 +186,28 @@ Changes arriving within one `voxel_stream.rate` period clear it once.
   `output.background_color`.
 - `~/colormap/set_depth_range` (`std_msgs/Float64`): meters over which the
   voxel colormap runs once, positive. Starts from `camera.color_depth_range`.
+- `~/colormap/set_color_offset` (`std_msgs/Float64`): meters added to the
+  distance voxels are colored by, finite. Starts from `camera.color_offset`.
+- `~/colormap/set_mode` (`std_msgs/String`): `distance` colors voxels by
+  their distance from the camera (the two settings above), `height` by their
+  height above a neutral height (the settings below). Starts from
+  `colormap.mode`.
+- `~/colormap/set_height_relative` (`std_msgs/Bool`): the neutral height is
+  the height of `colormap.height_frame` (true, following it as it moves) or
+  z 0 of the fixed frame (false). Starts from `colormap.height_relative`.
+- `~/colormap/set_height_offset` (`std_msgs/Float64`): meters added to the
+  neutral height, finite. Starts from `colormap.height_offset`.
+- `~/colormap/set_height_scale` (`std_msgs/Float64`): meters from the neutral
+  height where colors start changing slower, positive. Starts from
+  `colormap.height_scale`.
+- `~/colormap/set_height_bands` (`std_msgs/UInt32`): 0 for a continuous
+  height colormap, otherwise that many flat color bands, at most 256. Starts
+  from `colormap.height_bands`.
 
 Invalid values are logged and ignored. Every setting with a `set_*` topic is
 published on the matching `get_*` topic of its node (`r3v_renderer`:
 `~/get_enabled`, `~/marching_cubes/get_enabled`, `~/background/get_color`,
-`~/colormap/get_depth_range`; `r3v_voxelizer`: `~/get_resolution`,
+`~/colormap/get_depth_range`, `~/colormap/get_mode`, ...; `r3v_voxelizer`: `~/get_resolution`,
 `~/point_clouds/<name>/get_hit_multiplier`, ...) with a transient local QoS,
 so a late subscriber (with a transient local, reliable QoS too) gets the
 current state.
@@ -252,7 +273,9 @@ and would synchronize again and again between two.
 - Robot visuals are drawn without URDF colors (the renderer shades meshes
   white); voxels are colored by distance from the camera (turbo over
   0..`camera.color_depth_range`, 50 m by default, shifted by
-  `camera.color_offset`).
+  `camera.color_offset`) or, with `colormap.mode: height`, by height through
+  a hypsometric colormap (blue below the neutral height, then green, yellow,
+  brown and white above it).
 - Marching cubes (`voxels.marching_cubes`) smooths the voxel surface, which
   also closes the gaps a thin, steep surface (ground seen by a lidar) leaves
   between voxels that only touch at an edge.

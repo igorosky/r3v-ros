@@ -15,6 +15,7 @@
 #include "std_msgs/msg/color_rgba.hpp"
 #include "std_msgs/msg/float64.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "std_msgs/msg/u_int32.hpp"
 #if __has_include("tf2_ros/buffer.hpp")
 #include "tf2_ros/buffer.hpp"
 #else
@@ -44,13 +45,28 @@ public:
   explicit RendererNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
 
 private:
+  // How voxels are colored: by distance from the camera through turbo, or
+  // by height through a hypsometric colormap (see colormap in
+  // config/r3v.yaml).
+  struct Colormap {
+    double depth_range;  // meters the distance colormap runs over once
+    double color_offset;  // meters added to the distance
+    bool by_height;
+    bool height_relative;  // neutral height at height_frame_ instead of 0
+    double height_offset;  // meters above the neutral height
+    double height_scale;  // meters, the knee of the height colormap
+    uint32_t height_bands;  // 0 is continuous
+  };
+
   void declareParameters();
   void createRenderer();
-  // Applies the frame size, background color and colormap depth range.
+  // Applies the frame size, background color and colormap.
   void configureRenderer();
   // Applies the voxel size and marching cubes.
   void configureTesselator();
   void createInterfaces();
+  // The ~/colormap/set_* subscriptions and get_* publishers.
+  void createColormapInterfaces(const rclcpp::SubscriptionOptions& options);
   // The subscriptions a disabled renderer drops: TF, the voxel stream and
   // robot_description.
   void subscribeInputs();
@@ -79,11 +95,13 @@ private:
   void setVoxelsVisible(bool visible);
   void setMarchingCubes(bool enabled);
   void setBackgroundColor(const rr::R3vVec3& color);
-  void setColorDepthRange(double range);
+  void setColormap(const Colormap& colormap);
+  // Height coloring relative to height_frame_: follows that frame's height.
+  void updateHeightReference();
   void publishEnabled();
   void publishMarchingCubes();
   void publishBackgroundColor();
-  void publishColorDepthRange();
+  void publishColormap();
   void publish(const std::vector<uint8_t>& bgra, const rclcpp::Time& stamp);
 
   // Parameters.
@@ -108,7 +126,8 @@ private:
   Eigen::Vector3d camera_target_;
   CameraLens lens_;
   std::string camera_pose_topic_;
-  double color_offset_;
+  std::string height_frame_;
+  double height_gain_;
   std::string stream_topic_;
   size_t stream_depth_;
   std::string request_topic_;
@@ -150,6 +169,12 @@ private:
     std::optional<bool> marching_cubes;
     std::optional<rr::R3vVec3> background_color;
     std::optional<double> color_depth_range;
+    std::optional<double> color_offset;
+    std::optional<bool> color_by_height;
+    std::optional<bool> height_relative;
+    std::optional<double> height_offset;
+    std::optional<double> height_scale;
+    std::optional<uint32_t> height_bands;
   };
   std::mutex controls_mutex_;
   Controls controls_;
@@ -167,7 +192,8 @@ private:
   bool voxels_visible_;
   bool marching_cubes_;
   rr::R3vVec3 background_color_;  // sRGB, each component in 0..1
-  double color_depth_range_;
+  Colormap colormap_;
+  double height_reference_ = 0.0;  // height_frame_ z in fixed_frame_ the renderer got
 
   rclcpp::CallbackGroup::SharedPtr tf_group_;
   rclcpp::CallbackGroup::SharedPtr stream_group_;
@@ -182,12 +208,18 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr voxels_visible_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr marching_cubes_sub_;
   rclcpp::Subscription<std_msgs::msg::ColorRGBA>::SharedPtr background_color_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr color_depth_range_sub_;
+  std::vector<rclcpp::SubscriptionBase::SharedPtr> colormap_subs_;
   // Current state of the settings above, transient local for late joiners.
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr enabled_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr marching_cubes_pub_;
   rclcpp::Publisher<std_msgs::msg::ColorRGBA>::SharedPtr background_color_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr color_depth_range_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr color_offset_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr color_mode_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr height_relative_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr height_offset_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr height_scale_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr height_bands_pub_;
   rclcpp::Publisher<msg::FullSyncRequest>::SharedPtr request_pub_;
   image_transport::Publisher image_pub_;
   rclcpp::TimerBase::SharedPtr render_timer_;

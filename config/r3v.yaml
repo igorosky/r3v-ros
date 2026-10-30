@@ -171,11 +171,13 @@
       # the pose's +X axis with +Z up. Overrides position/target once received.
       # Empty disables it.
       pose_topic: "~/camera_pose"
-      # Meters added to the distance voxels are coloured by. The renderer
-      # colours them by distance from the camera through the turbo colormap
-      # over 0..color_depth_range, whose low end is close to black: voxels a
-      # few meters away come out almost black unless this is around 5..10
-      # (with the default range).
+      # Meters added to the distance voxels are coloured by. By distance (see
+      # colormap.mode) the renderer colours them by distance from the camera
+      # through the turbo colormap over 0..color_depth_range, whose low end is
+      # close to black: voxels a few meters away come out almost black unless
+      # this is around 5..10 (with the default range).
+      # ~/colormap/set_color_offset (std_msgs/Float64) changes it at runtime,
+      # ~/colormap/get_color_offset holds the current one.
       color_offset: 0.0
       # Meters over which the voxel colormap runs once. ~/colormap/set_depth_range
       # (std_msgs/Float64) changes it at runtime, ~/colormap/get_depth_range
@@ -192,3 +194,34 @@
       # ~/marching_cubes/set_enabled (std_msgs/Bool) switches it at runtime,
       # ~/marching_cubes/get_enabled holds the current state.
       marching_cubes: false
+
+    colormap:
+      # How voxels are coloured: distance (from the camera, turbo, see
+      # camera.color_depth_range and camera.color_offset) or height (above a
+      # neutral height, a hypsometric colormap: blue below it, green, yellow
+      # and brown above, white far above). ~/colormap/set_mode
+      # (std_msgs/String, distance or height) changes it at runtime,
+      # ~/colormap/get_mode holds the current one.
+      mode: distance
+      # The rest only matters by height. Each one but height_frame and
+      # height_gain changes at runtime through ~/colormap/set_<name> and is
+      # held by ~/colormap/get_<name>.
+      #
+      # false: the neutral height is z 0 of fixed_frame. true: it is the
+      # height of height_frame in fixed_frame, following it as it moves
+      # (std_msgs/Bool).
+      height_relative: false
+      # Frame the neutral height follows with height_relative. Empty means
+      # fixed_frame.
+      height_frame: base_link
+      # Meters added to the neutral height (std_msgs/Float64).
+      height_offset: 0.0
+      # Meters from the neutral height where the colours start changing
+      # slower (the colormap is logarithmic beyond it), positive
+      # (std_msgs/Float64).
+      height_scale: 0.5
+      # How fast the colours change with height, positive.
+      height_gain: 0.35
+      # 0 for a continuous colormap, otherwise this many flat colour bands
+      # (contours), at most 256 (std_msgs/UInt32).
+      height_bands: 0

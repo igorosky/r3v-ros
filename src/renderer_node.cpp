@@ -9,6 +9,8 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <tuple>
 #include <utility>
 
 #include "rclcpp_components/register_node_macro.hpp"
@@ -40,6 +42,13 @@ static_assert(
 // Voxel size the tesselator starts with; the first FULL message brings the
 // real one.
 constexpr double kInitialResolution = 0.1;
+
+// The height colormap has 256 entries, more bands than that look the same.
+constexpr uint32_t kMaxHeightBands = 256;
+
+// How far height_frame moves up or down before the height colormap follows,
+// in meters. Spares reconfiguring the renderer on every bit of noise.
+constexpr double kHeightReferenceStep = 0.01;
 
 }  // namespace
 
@@ -142,15 +151,39 @@ void RendererNode::declareParameters() {
   lens_.near = declare_parameter<double>("camera.near", 0.05);
   lens_.far = declare_parameter<double>("camera.far", 200.0);
   camera_pose_topic_ = declare_parameter<std::string>("camera.pose_topic", "~/camera_pose");
-  color_offset_ = declare_parameter<double>("camera.color_offset", 0.0);
-  require(std::isfinite(color_offset_), "camera.color_offset must be finite");
-  color_depth_range_ = declare_parameter<double>("camera.color_depth_range", 50.0);
+  colormap_.color_offset = declare_parameter<double>("camera.color_offset", 0.0);
   require(
-    validPositiveFloat(color_depth_range_),
+    validFloat(colormap_.color_offset), "camera.color_offset must be finite and fit in a float");
+  colormap_.depth_range = declare_parameter<double>("camera.color_depth_range", 50.0);
+  require(
+    validPositiveFloat(colormap_.depth_range),
     "camera.color_depth_range must be positive and fit in a float");
   require(
     lens_.fov_deg > 0.0 && lens_.fov_deg < 180.0, "camera.fov_deg must be between 0 and 180");
   require(lens_.near > 0.0 && lens_.far > lens_.near, "camera needs 0 < near < far");
+
+  const rr::R3vTerrainColoring coloring = rr::r3v_terrain_coloring_default();
+  const std::string mode = declare_parameter<std::string>("colormap.mode", "distance");
+  require(mode == "distance" || mode == "height", "colormap.mode must be distance or height");
+  colormap_.by_height = mode == "height";
+  height_frame_ = declare_parameter<std::string>("colormap.height_frame", "base_link");
+  colormap_.height_relative = declare_parameter<bool>("colormap.height_relative", false);
+  colormap_.height_offset = declare_parameter<double>("colormap.height_offset", 0.0);
+  require(
+    validFloat(colormap_.height_offset),
+    "colormap.height_offset must be finite and fit in a float");
+  colormap_.height_scale = declare_parameter<double>("colormap.height_scale", coloring.height_knee);
+  require(
+    validPositiveFloat(colormap_.height_scale),
+    "colormap.height_scale must be positive and fit in a float");
+  height_gain_ = declare_parameter<double>("colormap.height_gain", coloring.height_gain);
+  require(
+    validPositiveFloat(height_gain_), "colormap.height_gain must be positive and fit in a float");
+  const int64_t bands = declare_parameter<int64_t>("colormap.height_bands", 0);
+  require(
+    bands >= 0 && bands <= kMaxHeightBands,
+    "colormap.height_bands must be between 0 and " + std::to_string(kMaxHeightBands));
+  colormap_.height_bands = static_cast<uint32_t>(bands);
 
   voxels_visible_ = declare_parameter<bool>("voxels.visible", true);
   marching_cubes_ = declare_parameter<bool>("voxels.marching_cubes", false);
@@ -175,13 +208,20 @@ void RendererNode::createRenderer() {
 }
 
 void RendererNode::configureRenderer() {
-  // The same frame size keeps the frame the renderer holds. Default terrain
-  // coloring: no height coloring, voxels keep the depth colormap.
+  // The same frame size keeps the frame the renderer holds and only changes
+  // the settings, which is one small GPU buffer write.
+  rr::R3vTerrainColoring coloring = rr::r3v_terrain_coloring_default();
+  coloring.height_coloring_enabled = colormap_.by_height;
+  coloring.relative_to_robot = colormap_.height_relative;
+  coloring.robot_height = static_cast<float>(height_reference_);
+  coloring.height_offset = static_cast<float>(colormap_.height_offset);
+  coloring.height_knee = static_cast<float>(colormap_.height_scale);
+  coloring.height_gain = static_cast<float>(height_gain_);
+  coloring.height_bands = colormap_.height_bands;
   checkStatus(
     rr::r3v_wgpu_renderer_configure(
       renderer_.get(),
-      { width_, height_, background_color_, static_cast<float>(color_depth_range_),
-        rr::r3v_terrain_coloring_default() }),
+      { width_, height_, background_color_, static_cast<float>(colormap_.depth_range), coloring }),
     "configuring the renderer");
 }
 
@@ -247,18 +287,6 @@ void RendererNode::createInterfaces() {
       std::lock_guard<std::mutex> lock(controls_mutex_);
       controls_.background_color = rr::R3vVec3{ msg->r, msg->g, msg->b };
     }, control_options);
-  color_depth_range_sub_ = create_subscription<std_msgs::msg::Float64>(
-    "~/colormap/set_depth_range", rclcpp::QoS(10),
-    [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
-      if (!validPositiveFloat(msg->data)) {
-        RCLCPP_WARN(
-          get_logger(), "Ignoring colormap depth range %g: must be positive and fit in a "
-          "float", msg->data);
-        return;
-      }
-      std::lock_guard<std::mutex> lock(controls_mutex_);
-      controls_.color_depth_range = msg->data;
-    }, control_options);
 
   const rclcpp::QoS state_qos = rclcpp::QoS(1).reliable().transient_local();
   enabled_pub_ = create_publisher<std_msgs::msg::Bool>("~/get_enabled", state_qos);
@@ -266,12 +294,10 @@ void RendererNode::createInterfaces() {
     create_publisher<std_msgs::msg::Bool>("~/marching_cubes/get_enabled", state_qos);
   background_color_pub_ =
     create_publisher<std_msgs::msg::ColorRGBA>("~/background/get_color", state_qos);
-  color_depth_range_pub_ =
-    create_publisher<std_msgs::msg::Float64>("~/colormap/get_depth_range", state_qos);
   publishEnabled();
   publishMarchingCubes();
   publishBackgroundColor();
-  publishColorDepthRange();
+  createColormapInterfaces(control_options);
 
   request_pub_ = create_publisher<msg::FullSyncRequest>(request_topic_, rclcpp::QoS(10));
   if (enabled_) {
@@ -285,6 +311,92 @@ void RendererNode::createInterfaces() {
     std::chrono::duration<double>(1.0 / rate_), [this]() { onRender(); }, render_group_);
   sync_timer_ = create_wall_timer(
     std::chrono::duration<double>(sync_retry_), [this]() { onSyncRetry(); }, stream_group_);
+}
+
+void RendererNode::createColormapInterfaces(const rclcpp::SubscriptionOptions& options) {
+  // `set` queues the value in controls_. Values failing `valid` are dropped
+  // with a warning naming `what` and `requirement`.
+  const auto float_setter = [this, &options](
+    const std::string& topic, const std::string& what, bool (*valid)(double),
+    const std::string& requirement, auto set) {
+      colormap_subs_.push_back(
+        create_subscription<std_msgs::msg::Float64>(
+          topic, rclcpp::QoS(10),
+          [this, what, valid, requirement, set](std_msgs::msg::Float64::ConstSharedPtr msg) {
+            if (!valid(msg->data)) {
+              RCLCPP_WARN(
+                get_logger(), "Ignoring %s %g: %s", what.c_str(), msg->data, requirement.c_str());
+              return;
+            }
+            std::lock_guard<std::mutex> lock(controls_mutex_);
+            set(controls_, msg->data);
+          }, options));
+    };
+  float_setter(
+    "~/colormap/set_depth_range", "colormap depth range", validPositiveFloat,
+    "must be positive and fit in a float",
+    [](Controls& controls, double value) { controls.color_depth_range = value; });
+  float_setter(
+    "~/colormap/set_color_offset", "colormap color offset", validFloat,
+    "must be finite and fit in a float",
+    [](Controls& controls, double value) { controls.color_offset = value; });
+  float_setter(
+    "~/colormap/set_height_offset", "colormap height offset", validFloat,
+    "must be finite and fit in a float",
+    [](Controls& controls, double value) { controls.height_offset = value; });
+  float_setter(
+    "~/colormap/set_height_scale", "colormap height scale", validPositiveFloat,
+    "must be positive and fit in a float",
+    [](Controls& controls, double value) { controls.height_scale = value; });
+  colormap_subs_.push_back(
+    create_subscription<std_msgs::msg::String>(
+      "~/colormap/set_mode", rclcpp::QoS(10),
+      [this](std_msgs::msg::String::ConstSharedPtr msg) {
+        if (msg->data != "distance" && msg->data != "height") {
+          RCLCPP_WARN(
+            get_logger(), "Ignoring colormap mode '%s': must be distance or height",
+            msg->data.c_str());
+          return;
+        }
+        std::lock_guard<std::mutex> lock(controls_mutex_);
+        controls_.color_by_height = msg->data == "height";
+      }, options));
+  colormap_subs_.push_back(
+    create_subscription<std_msgs::msg::Bool>(
+      "~/colormap/set_height_relative", rclcpp::QoS(10),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        std::lock_guard<std::mutex> lock(controls_mutex_);
+        controls_.height_relative = msg->data;
+      }, options));
+  colormap_subs_.push_back(
+    create_subscription<std_msgs::msg::UInt32>(
+      "~/colormap/set_height_bands", rclcpp::QoS(10),
+      [this](std_msgs::msg::UInt32::ConstSharedPtr msg) {
+        if (msg->data > kMaxHeightBands) {
+          RCLCPP_WARN(
+            get_logger(), "Ignoring %" PRIu32 " colormap height bands: at most %" PRIu32,
+            msg->data, kMaxHeightBands);
+          return;
+        }
+        std::lock_guard<std::mutex> lock(controls_mutex_);
+        controls_.height_bands = msg->data;
+      }, options));
+
+  const rclcpp::QoS state_qos = rclcpp::QoS(1).reliable().transient_local();
+  color_depth_range_pub_ =
+    create_publisher<std_msgs::msg::Float64>("~/colormap/get_depth_range", state_qos);
+  color_offset_pub_ =
+    create_publisher<std_msgs::msg::Float64>("~/colormap/get_color_offset", state_qos);
+  color_mode_pub_ = create_publisher<std_msgs::msg::String>("~/colormap/get_mode", state_qos);
+  height_relative_pub_ =
+    create_publisher<std_msgs::msg::Bool>("~/colormap/get_height_relative", state_qos);
+  height_offset_pub_ =
+    create_publisher<std_msgs::msg::Float64>("~/colormap/get_height_offset", state_qos);
+  height_scale_pub_ =
+    create_publisher<std_msgs::msg::Float64>("~/colormap/get_height_scale", state_qos);
+  height_bands_pub_ =
+    create_publisher<std_msgs::msg::UInt32>("~/colormap/get_height_bands", state_qos);
+  publishColormap();
 }
 
 void RendererNode::subscribeInputs() {
@@ -507,9 +619,15 @@ void RendererNode::applyControls() {
   if (controls.background_color) {
     setBackgroundColor(*controls.background_color);
   }
-  if (controls.color_depth_range) {
-    setColorDepthRange(*controls.color_depth_range);
-  }
+  Colormap colormap = colormap_;
+  colormap.depth_range = controls.color_depth_range.value_or(colormap.depth_range);
+  colormap.color_offset = controls.color_offset.value_or(colormap.color_offset);
+  colormap.by_height = controls.color_by_height.value_or(colormap.by_height);
+  colormap.height_relative = controls.height_relative.value_or(colormap.height_relative);
+  colormap.height_offset = controls.height_offset.value_or(colormap.height_offset);
+  colormap.height_scale = controls.height_scale.value_or(colormap.height_scale);
+  colormap.height_bands = controls.height_bands.value_or(colormap.height_bands);
+  setColormap(colormap);
 }
 
 void RendererNode::flushVoxels() {
@@ -632,14 +750,51 @@ void RendererNode::setBackgroundColor(const rr::R3vVec3& color) {
   RCLCPP_INFO(get_logger(), "Background color (%g, %g, %g)", color.x, color.y, color.z);
 }
 
-void RendererNode::setColorDepthRange(double range) {
-  if (range == color_depth_range_) {
+void RendererNode::setColormap(const Colormap& colormap) {
+  const auto fields = [](const Colormap& c) {
+      return std::tie(
+        c.depth_range, c.color_offset, c.by_height, c.height_relative, c.height_offset,
+        c.height_scale, c.height_bands);
+    };
+  if (fields(colormap) == fields(colormap_)) {
     return;
   }
-  color_depth_range_ = range;
+  colormap_ = colormap;
+  // The color offset only moves the camera position the renderer gets.
   configureRenderer();
-  publishColorDepthRange();
-  RCLCPP_INFO(get_logger(), "Colormap depth range %g m", range);
+  publishColormap();
+  if (colormap_.by_height) {
+    const std::string reference =
+      colormap_.height_relative ? "'" + height_frame_ + "'" : "'" + fixed_frame_ + "' z 0";
+    RCLCPP_INFO(
+      get_logger(), "Coloring voxels by height: neutral at %s %+g m, scale %g m, %" PRIu32
+      " bands", reference.c_str(), colormap_.height_offset, colormap_.height_scale,
+      colormap_.height_bands);
+  } else {
+    RCLCPP_INFO(
+      get_logger(), "Coloring voxels by distance: depth range %g m, offset %g m",
+      colormap_.depth_range, colormap_.color_offset);
+  }
+}
+
+void RendererNode::updateHeightReference() {
+  if (!colormap_.by_height || !colormap_.height_relative) {
+    return;
+  }
+  std::string error;
+  const auto to_fixed = robot_->lookupLatest(*tf_buffer_, fixed_frame_, height_frame_, &error);
+  if (!to_fixed) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 5000, "Height colormap keeps its last neutral height: %s",
+      error.c_str());
+    return;
+  }
+  const double height = to_fixed->translation().z();
+  if (std::abs(height - height_reference_) < kHeightReferenceStep) {
+    return;
+  }
+  height_reference_ = height;
+  configureRenderer();
 }
 
 void RendererNode::publishEnabled() {
@@ -663,10 +818,25 @@ void RendererNode::publishBackgroundColor() {
   background_color_pub_->publish(msg);
 }
 
-void RendererNode::publishColorDepthRange() {
-  std_msgs::msg::Float64 msg;
-  msg.data = color_depth_range_;
-  color_depth_range_pub_->publish(msg);
+void RendererNode::publishColormap() {
+  std_msgs::msg::Float64 number;
+  number.data = colormap_.depth_range;
+  color_depth_range_pub_->publish(number);
+  number.data = colormap_.color_offset;
+  color_offset_pub_->publish(number);
+  number.data = colormap_.height_offset;
+  height_offset_pub_->publish(number);
+  number.data = colormap_.height_scale;
+  height_scale_pub_->publish(number);
+  std_msgs::msg::String mode;
+  mode.data = colormap_.by_height ? "height" : "distance";
+  color_mode_pub_->publish(mode);
+  std_msgs::msg::Bool relative;
+  relative.data = colormap_.height_relative;
+  height_relative_pub_->publish(relative);
+  std_msgs::msg::UInt32 bands;
+  bands.data = colormap_.height_bands;
+  height_bands_pub_->publish(bands);
 }
 
 bool RendererNode::cameraView(CameraView& view) const {
@@ -730,13 +900,15 @@ void RendererNode::onRender() {
         frame.c_str(), fixed_frame_.c_str());
       return;
     }
-    // The renderer colours voxels by their distance from state.position
-    // along the view, through turbo over 0..color_depth_range, and reads the
-    // position for nothing else: moving it back keeps close voxels off
-    // turbo's dark end.
-    state.position.x -= static_cast<float>(color_offset_) * state.forward.x;
-    state.position.y -= static_cast<float>(color_offset_) * state.forward.y;
-    state.position.z -= static_cast<float>(color_offset_) * state.forward.z;
+    updateHeightReference();
+    // By distance, the renderer colours voxels by their distance from
+    // state.position along the view, through turbo over 0..depth_range, and
+    // reads the position for nothing else: moving it back keeps close voxels
+    // off turbo's dark end.
+    const float color_offset = static_cast<float>(colormap_.color_offset);
+    state.position.x -= color_offset * state.forward.x;
+    state.position.y -= color_offset * state.forward.y;
+    state.position.z -= color_offset * state.forward.z;
 
     const rclcpp::Time now = this->now();
     checkStatus(

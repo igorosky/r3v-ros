@@ -32,15 +32,15 @@ jobs:
       - name: cpplint
         run: |
           source /opt/ros/humble/setup.bash
-          ament_cpplint src include
+          ament_cpplint src include test
 
-      # Only src and include: the submodules' generated bindings do not follow
-      # this style.
+      # Only src, include and test: the submodules' generated bindings do not
+      # follow this style.
       - name: uncrustify
         if: success() || failure()
         run: |
           source /opt/ros/humble/setup.bash
-          ament_uncrustify -c uncrustify.cfg src include
+          ament_uncrustify -c uncrustify.cfg src include test
 
   build:
     name: build + test (${{ matrix.distro }})

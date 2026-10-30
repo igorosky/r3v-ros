@@ -2,7 +2,7 @@
 
 #include "Eigen/Geometry"
 
-#include "r3v_ros/r3v_handles.hpp"
+#include "r3v_ros/renderer_handles.hpp"
 
 namespace r3v_ros {
 

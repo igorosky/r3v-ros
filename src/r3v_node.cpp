@@ -278,11 +278,13 @@ void R3vNode::createRenderer() {
 }
 
 void R3vNode::configureRenderer() {
-  // The same frame size keeps the frame the renderer holds.
+  // The same frame size keeps the frame the renderer holds. Default terrain
+  // coloring: no height coloring, voxels keep the depth colormap.
   checkStatus(
     rr::r3v_wgpu_renderer_configure(
       renderer_.get(),
-      { width_, height_, background_color_, static_cast<float>(color_depth_range_) }),
+      { width_, height_, background_color_, static_cast<float>(color_depth_range_),
+        rr::r3v_terrain_coloring_default() }),
     "configuring the renderer");
 }
 
@@ -866,8 +868,9 @@ void R3vNode::tesselate(const std::vector<rr::R3vPointI>& blocks) {
 
 void R3vNode::uploadGeometryDelta() {
   rr::R3vGeometryDelta* delta = nullptr;
+  // No camera state: every changed chunk, not only the ones in view.
   checkStatus(
-    rr::r3v_cpu_tesselator_get_output_geometry_delta(tesselator_.get(), &delta),
+    rr::r3v_cpu_tesselator_get_output_geometry_delta(tesselator_.get(), nullptr, &delta),
     "tesselating voxels");
   if (delta != nullptr) {
     // Takes ownership of delta, also on failure.

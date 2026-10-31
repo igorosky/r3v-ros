@@ -39,11 +39,13 @@ bool sameMultipliers(const rv::Multipliers& a, const rv::Multipliers& b) {
   return a.intensity == b.intensity && a.hit == b.hit && a.target == b.target;
 }
 
+// Below 2^53: JavaScript renderers (through rosbridge) hold it in a number,
+// which keeps no more bits, and have to send it back exactly.
 uint64_t randomSession() {
   std::random_device device;
   std::seed_seq seed{ device(), device(), device(), device() };
   std::mt19937_64 engine(seed);
-  return engine();
+  return engine() & ((uint64_t{ 1 } << 53) - 1);
 }
 
 }  // namespace

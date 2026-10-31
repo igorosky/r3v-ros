@@ -30,6 +30,7 @@ jobs:
             ros-humble-ament-cpplint ros-humble-ament-uncrustify
 
       - name: cpplint
+        working-directory: r3v_ros
         run: |
           source /opt/ros/humble/setup.bash
           ament_cpplint src include test
@@ -38,6 +39,7 @@ jobs:
       # follow this style.
       - name: uncrustify
         if: success() || failure()
+        working-directory: r3v_ros
         run: |
           source /opt/ros/humble/setup.bash
           ament_uncrustify -c uncrustify.cfg src include test
@@ -68,7 +70,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-          path: src/r3v_ros
+          path: src/r3v-ros
 
       # Ubuntu's rustc is too old for the r3v crates (edition 2024).
       - uses: dtolnay/rust-toolchain@stable
@@ -81,7 +83,7 @@ jobs:
       - name: Cargo cache key
         id: cargo-key
         run: |
-          key=$( { git -C src/r3v_ros submodule status; rustc -V; } | sha256sum | cut -c1-16)
+          key=$( { git -C src/r3v-ros submodule status; rustc -V; } | sha256sum | cut -c1-16)
           echo "key=${key}" >> "${GITHUB_OUTPUT}"
 
       # One cache per distro (different glibc).

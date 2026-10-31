@@ -3,20 +3,30 @@
 ROS 2 nodes (Humble and Jazzy) that build a voxel map from point clouds and
 render it together with a robot, publishing the result as a video stream.
 
+The repository holds two packages:
+
+- [r3v_ros](r3v_ros): the nodes below, with the Rust crates they are built on
+  as git submodules ([r3v-voxelizer](r3v_ros/r3v-voxelizer),
+  [r3v-renderer](r3v_ros/r3v-renderer)).
+- [r3v_interfaces](r3v_interfaces): the voxel stream messages only, so that
+  whatever only passes the stream on (rosbridge, bridges between machines) or
+  renders it elsewhere (e.g. r3v-renderer's JS bindings in a browser) builds
+  without Rust.
+
 - `r3v_voxelizer` (`r3v_voxelizer_node`, component `r3v_ros::VoxelizerNode`):
   any number (0..N) of `sensor_msgs/PointCloud2` topics, ray cast into an
-  occupancy voxel map by [r3v-voxelizer](r3v-voxelizer). Publishes the map on
+  occupancy voxel map by [r3v-voxelizer](r3v_ros/r3v-voxelizer). Publishes the map on
   the voxel stream.
 - `r3v_renderer` (`r3v_renderer_node`, component `r3v_ros::RendererNode`):
   follows the voxel stream and renders the map with the robot, URDF from
   `/robot_description` (or a file) posed from `/tf` and `/tf_static`. Meshes
   in any format assimp reads (STL, DAE, OBJ, glTF, ...) plus box, cylinder and
   sphere primitives. Renders headless on the GPU through Vulkan (or on the CPU
-  with lavapipe) with [r3v-renderer](r3v-renderer).
+  with lavapipe) with [r3v-renderer](r3v_ros/r3v-renderer).
 - Output: `sensor_msgs/Image` through `image_transport`, so `<topic>/compressed`
   (and every other installed transport) is published too.
 
-Both nodes are set in one ROS parameter file: see [config/r3v.yaml](config/r3v.yaml),
+Both nodes are set in one ROS parameter file: see [config/r3v.yaml](r3v_ros/config/r3v.yaml),
 which documents every parameter. It has a section read by both nodes and one
 per node, so the same file serves every way of running them.
 
@@ -93,7 +103,7 @@ GPU access:
   for big frames.
 
 The renderer needs the GPU, the voxelizer only with `voxelizer.backend: wgpu`
-(the default in `config/r3v.yaml`).
+(the default in `r3v_ros/config/r3v.yaml`).
 
 Meshes referenced as `package://<pkg>/...` must be found in the container.
 Either install the description package into a derived image, or mount the
@@ -112,13 +122,13 @@ docker run ... -v /path/to/src:/robot:ro r3v-ros:jazzy
 |---|---|---|
 | `tf_topic` (`/tf`), `tf_static_topic` (`/tf_static`) | `tf2_msgs/TFMessage` | in |
 | `point_clouds.<name>.topic` | `sensor_msgs/PointCloud2` | in |
-| `~/request_full_sync` | `r3v_ros/FullSyncRequest` | in |
+| `~/request_full_sync` | `r3v_interfaces/FullSyncRequest` | in |
 | `~/clear_voxels` | `std_msgs/Empty` | in |
 | `~/set_resolution` | `std_msgs/Float64` | in |
 | `~/set_destroy_threshold`, `set_construct_threshold`, `set_max_value` | `std_msgs/UInt32` | in |
 | `~/point_clouds/<name>/set_intensity_multiplier` | `std_msgs/Float64` | in |
 | `~/point_clouds/<name>/set_hit_multiplier`, `set_target_multiplier` | `std_msgs/UInt32` | in |
-| `voxel_stream.topic` (`/r3v/voxels`) | `r3v_ros/VoxelMapUpdate` (reliable) | out |
+| `voxel_stream.topic` (`/r3v/voxels`) | `r3v_interfaces/VoxelMapUpdate` (reliable) | out |
 
 `r3v_renderer`:
 
@@ -126,7 +136,7 @@ docker run ... -v /path/to/src:/robot:ro r3v-ros:jazzy
 |---|---|---|
 | `tf_topic` (`/tf`), `tf_static_topic` (`/tf_static`) | `tf2_msgs/TFMessage` | in |
 | `robot_description.topic` (`/robot_description`) | `std_msgs/String` (transient local) | in |
-| `voxel_stream.topic` (`/r3v/voxels`) | `r3v_ros/VoxelMapUpdate` (reliable) | in |
+| `voxel_stream.topic` (`/r3v/voxels`) | `r3v_interfaces/VoxelMapUpdate` (reliable) | in |
 | `~/set_enabled` | `std_msgs/Bool` | in |
 | `camera.pose_topic` (`~/camera_pose`) | `geometry_msgs/PoseStamped` | in |
 | `~/hidden_links` | `std_msgs/String` | in |
@@ -138,7 +148,7 @@ docker run ... -v /path/to/src:/robot:ro r3v-ros:jazzy
 | `~/colormap/set_height_relative` | `std_msgs/Bool` | in |
 | `~/colormap/set_height_offset`, `set_height_scale` | `std_msgs/Float64` | in |
 | `~/colormap/set_height_bands` | `std_msgs/UInt32` | in |
-| `voxel_stream.request_topic` (`/r3v_voxelizer/request_full_sync`) | `r3v_ros/FullSyncRequest` | out |
+| `voxel_stream.request_topic` (`/r3v_voxelizer/request_full_sync`) | `r3v_interfaces/FullSyncRequest` | out |
 | `output.topic` (`/r3v/image`) + transports | `sensor_msgs/Image` (best effort, `output.qos`) | out |
 
 The camera is placed by `camera.position` / `camera.target`, given in
@@ -227,11 +237,12 @@ voxelizer (see below). The parameter `enabled` sets the state it starts in.
 ## Voxel stream
 
 The voxelizer publishes the map on `voxel_stream.topic` as
-[r3v_ros/msg/VoxelMapUpdate](msg/VoxelMapUpdate.msg), reliable and in order
+[r3v_interfaces/msg/VoxelMapUpdate](r3v_interfaces/msg/VoxelMapUpdate.msg), reliable and in order
 (keep last `voxel_stream.depth`, volatile): deltas and the whole map on the
 same topic, so a renderer never has to line the two up.
 
-- Every message carries the voxelizer's `session` (random per start) and a
+- Every message carries the voxelizer's `session` (random per start, below
+  2^53 so that JavaScript numbers hold it exactly) and a
   `sequence` growing by one per message, the voxel `resolution` and the fixed
   frame (`header.frame_id`, renderers ignore a stream in a frame other than
   their `fixed_frame`).
@@ -255,7 +266,7 @@ same topic, so a renderer never has to line the two up.
 A renderer follows the messages of one session in a row from some sequence
 `since` on (the first message it got, or the first after a gap or a new
 session). Until a FULL message comes it drops deltas and asks for one on
-`voxel_stream.request_topic` ([r3v_ros/msg/FullSyncRequest](msg/FullSyncRequest.msg):
+`voxel_stream.request_topic` ([r3v_interfaces/msg/FullSyncRequest](r3v_interfaces/msg/FullSyncRequest.msg):
 `session`, `since`), again every `voxel_stream.sync_retry` seconds. The
 voxelizer sends a FULL message unless it sent one at or after `since`
 already: that one is on its way, in order, so renderers asking together get a
@@ -294,7 +305,7 @@ and would synchronize again and again between two.
 
 The single `r3v_node` is gone. `ros2 launch r3v_ros r3v.launch.py` runs the
 same pipeline; parameter files need the per-node sections of
-[config/r3v.yaml](config/r3v.yaml) (`voxelizer.visible` and
+[config/r3v.yaml](r3v_ros/config/r3v.yaml) (`voxelizer.visible` and
 `voxelizer.marching_cubes` became `voxels.visible` and `voxels.marching_cubes`
 of `r3v_renderer`), and the control topics moved:
 
@@ -307,20 +318,21 @@ of `r3v_renderer`), and the control topics moved:
 ## Building without Docker
 
 Needs a ROS 2 install, Rust (via rustup, edition 2024 capable) and the
-dependencies from `package.xml` (`rosdep install --from-paths . --ignore-src`).
-Clone into a colcon workspace and run `colcon build`.
+dependencies of both packages (`rosdep install --from-paths . --ignore-src`).
+Clone into a colcon workspace and run `colcon build`; `colcon build
+--packages-select r3v_interfaces` builds the messages alone, without Rust.
 
 ## Development
 
-C++ code is checked with cpplint ([CPPLINT.cfg](CPPLINT.cfg)) and uncrustify
-([uncrustify.cfg](uncrustify.cfg)), and the voxel stream payload has unit
-tests ([test](test), no GPU needed). All of them run as tests:
+C++ code is checked with cpplint ([CPPLINT.cfg](r3v_ros/CPPLINT.cfg)) and uncrustify
+([uncrustify.cfg](r3v_ros/uncrustify.cfg)), and the voxel stream payload has unit
+tests ([test](r3v_ros/test), no GPU needed). All of them run as tests:
 
 ```bash
 colcon test --packages-select r3v_ros && colcon test-result --verbose
 ```
 
-or the linters directly, from the repository root:
+or the linters directly, from the `r3v_ros` directory:
 
 ```bash
 ament_cpplint src include test

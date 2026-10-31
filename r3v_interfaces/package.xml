@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>r3v_interfaces</name>
+  <version>0.1.0</version>
+  <description>
+    Messages of the r3v voxel stream (VoxelMapUpdate, FullSyncRequest), between
+    r3v_ros's voxelizer and its renderers. Interfaces only, so that clients of
+    the stream (rosbridge, bridges, other renderers) build without the Rust
+    crates r3v_ros needs.
+  </description>
+  <maintainer email="igor.zaworski2@gmail.com">igorosky</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <depend>std_msgs</depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

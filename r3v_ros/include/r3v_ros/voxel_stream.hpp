@@ -6,11 +6,14 @@
 #include <string>
 #include <vector>
 
-#include "r3v_ros/msg/voxel_map_update.hpp"
+#include "r3v_interfaces/msg/voxel_map_update.hpp"
 
 namespace r3v_ros {
 
-// Payload of the voxel stream (r3v_ros/msg/VoxelMapUpdate), shared by the
+// The voxel stream messages (VoxelMapUpdate, FullSyncRequest).
+namespace msg = r3v_interfaces::msg;
+
+// Payload of the voxel stream (r3v_interfaces/msg/VoxelMapUpdate), shared by the
 // voxelizer and the renderer node. It copies the structs of the r3v crates
 // as they are, which are little endian on every platform they run on.
 static_assert(

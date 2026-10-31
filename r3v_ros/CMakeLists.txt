@@ -8,8 +8,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
-# Only for our targets: the generated message code is C too and does not
-# build with all of them.
+# Only for our targets: the message headers (r3v_interfaces and the ROS ones)
+# do not build with all of them.
 set(R3V_ROS_COMPILE_OPTIONS -Wall -Wextra -Wpedantic -pedantic-errors -Wdeprecated
   -Wc++17-compat -Wconversion -Wsign-conversion -Wpessimizing-move -Werror)
 
@@ -18,8 +18,8 @@ find_package(ament_index_cpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(r3v_interfaces REQUIRED)
 find_package(rclcpp_components REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -33,12 +33,6 @@ find_package(assimp REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
 
-rosidl_generate_interfaces(${PROJECT_NAME}
-  msg/FullSyncRequest.msg
-  msg/VoxelMapUpdate.msg
-  DEPENDENCIES std_msgs)
-rosidl_get_typesupport_target(R3V_ROS_MSGS_TARGET ${PROJECT_NAME} rosidl_typesupport_cpp)
-
 include(cmake/r3v_rust.cmake)
 r3v_add_rust_library(renderer
   "${CMAKE_CURRENT_SOURCE_DIR}/r3v-renderer" r3v_renderer "cpp,multi-threaded")
@@ -50,6 +44,7 @@ set(R3V_ROS_DEPENDENCIES
   ament_index_cpp
   geometry_msgs
   image_transport
+  r3v_interfaces
   rclcpp
   rclcpp_components
   sensor_msgs
@@ -69,8 +64,8 @@ target_include_directories(r3v_ros_common PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 target_compile_options(r3v_ros_common PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
-ament_target_dependencies(r3v_ros_common rclcpp std_msgs tf2 tf2_msgs tf2_ros)
-target_link_libraries(r3v_ros_common "${R3V_ROS_MSGS_TARGET}" PkgConfig::ZSTD)
+ament_target_dependencies(r3v_ros_common r3v_interfaces rclcpp std_msgs tf2 tf2_msgs tf2_ros)
+target_link_libraries(r3v_ros_common PkgConfig::ZSTD)
 
 add_library(r3v_voxelizer_component SHARED
   src/cloud_processor.cpp
@@ -140,5 +135,4 @@ if(BUILD_TESTING)
   target_link_libraries(test_voxel_stream r3v_ros_common)
 endif()
 
-ament_export_dependencies(rosidl_default_runtime)
 ament_package()

@@ -16,7 +16,7 @@
     # key at the top level only, so a voxel_stream group here would be
     # replaced by the voxel_stream groups of the nodes below.
     #
-    # r3v_ros/msg/VoxelMapUpdate from the voxelizer to the renderers.
+    # r3v_interfaces/msg/VoxelMapUpdate from the voxelizer to the renderers.
     voxel_stream.topic: /r3v/voxels
     # Messages kept for a subscriber that is behind (reliable, keep last).
     # Losing more makes it ask for the whole map again.

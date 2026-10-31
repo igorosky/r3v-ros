@@ -1,5 +1,6 @@
 # One message of the voxel stream: a change of the voxel map built by
-# r3v_voxelizer_node, or the whole map. See README.md for the protocol.
+# r3v_voxelizer_node, or the whole map. See the repository README.md for the
+# protocol.
 
 # Blocks that changed since the previous message of the session.
 uint8 DELTA=0
@@ -11,7 +12,8 @@ uint8 COMPRESSION_ZSTD=1
 
 # stamp: when the message was published, frame_id: the voxelizer's fixed frame.
 std_msgs/Header header
-# Random for every voxelizer start.
+# Random for every voxelizer start, below 2^53 so that JavaScript numbers
+# (e.g. through rosbridge) hold it exactly and can send it back.
 uint64 session
 # Starts at 0 and grows by 1 with every published message of the session.
 uint64 sequence

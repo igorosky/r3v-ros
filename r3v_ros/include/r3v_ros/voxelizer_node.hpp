@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "Eigen/Geometry"
+#include "r3v_interfaces/msg/full_sync_request.hpp"
+#include "r3v_interfaces/msg/voxel_map_update.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "std_msgs/msg/empty.hpp"
@@ -22,8 +24,6 @@
 #endif
 
 #include "r3v_ros/cloud_processor.hpp"
-#include "r3v_ros/msg/full_sync_request.hpp"
-#include "r3v_ros/msg/voxel_map_update.hpp"
 #include "r3v_ros/node_common.hpp"
 #include "r3v_ros/voxel_stream.hpp"
 #include "r3v_ros/voxelizer_handles.hpp"

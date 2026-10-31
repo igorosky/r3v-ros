@@ -10,6 +10,8 @@
 #include "Eigen/Geometry"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "image_transport/image_transport.hpp"
+#include "r3v_interfaces/msg/full_sync_request.hpp"
+#include "r3v_interfaces/msg/voxel_map_update.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/color_rgba.hpp"
@@ -23,8 +25,6 @@
 #endif
 
 #include "r3v_ros/camera.hpp"
-#include "r3v_ros/msg/full_sync_request.hpp"
-#include "r3v_ros/msg/voxel_map_update.hpp"
 #include "r3v_ros/node_common.hpp"
 #include "r3v_ros/renderer_handles.hpp"
 #include "r3v_ros/robot_scene.hpp"

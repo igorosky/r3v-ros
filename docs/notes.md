@@ -41,7 +41,7 @@ The single `r3v_node` is gone. `ros2 launch r3v_ros r3v.launch.py` runs the
 same pipeline.
 
 Parameter files need the per-node sections of
-[config/r3v.yaml](../config/r3v.yaml). `voxelizer.visible` and
+[config/r3v.yaml](../r3v_ros/config/r3v.yaml). `voxelizer.visible` and
 `voxelizer.marching_cubes` became `voxels.visible` and `voxels.marching_cubes`
 of `r3v_renderer`.
 

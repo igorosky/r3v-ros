@@ -3,7 +3,7 @@
 [Back to README](../README.md)
 
 The voxelizer publishes the map on `voxel_stream.topic` (`/r3v/voxels`) as
-[r3v_ros/msg/VoxelMapUpdate](../msg/VoxelMapUpdate.msg), reliable and in
+[r3v_interfaces/msg/VoxelMapUpdate](../r3v_interfaces/msg/VoxelMapUpdate.msg), reliable and in
 order (keep last `voxel_stream.depth`, volatile). Changes and the whole map go
 on the same topic, so a renderer never has to line the two up.
 
@@ -14,7 +14,9 @@ the map, see [Downsampled stream](#downsampled-stream). Both work the same way.
 
 Every message carries:
 
-- the voxelizer's `session` (random per start),
+- the voxelizer's `session` (random per start, below 2^53 so that
+  JavaScript numbers, e.g. through rosbridge, hold it exactly and can send it
+  back),
 - a `sequence` growing by one per message,
 - the voxel `resolution`,
 - the fixed frame in `header.frame_id`. Renderers ignore a stream in a frame
@@ -45,7 +47,7 @@ session):
 
 1. Until a FULL message comes, it drops deltas and asks for one on
    `voxel_stream.request_topic` with a
-   [r3v_ros/msg/FullSyncRequest](../msg/FullSyncRequest.msg) (`session`,
+   [r3v_interfaces/msg/FullSyncRequest](../r3v_interfaces/msg/FullSyncRequest.msg) (`session`,
    `since`). It asks again every `voxel_stream.sync_retry` seconds.
 2. The voxelizer sends a FULL message, unless it already sent one at or after
    `since`. That one is on its way, in order, so renderers asking together get

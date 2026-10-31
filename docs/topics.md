@@ -11,7 +11,7 @@
 - [Output](#output)
 - [Enabling and disabling the renderer](#enabling-and-disabling-the-renderer)
 
-Topic names in the tables are parameters of [config/r3v.yaml](../config/r3v.yaml)
+Topic names in the tables are parameters of [config/r3v.yaml](../r3v_ros/config/r3v.yaml)
 with their default in parentheses, or fixed names relative to the node (`~/`).
 
 ## r3v_voxelizer
@@ -20,7 +20,7 @@ with their default in parentheses, or fixed names relative to the node (`~/`).
 |---|---|---|
 | `tf_topic` (`/tf`), `tf_static_topic` (`/tf_static`) | `tf2_msgs/TFMessage` | in |
 | `point_clouds.<name>.topic` | `sensor_msgs/PointCloud2` | in |
-| `~/request_full_sync`, `~/downsampled/request_full_sync` | `r3v_ros/FullSyncRequest` | in |
+| `~/request_full_sync`, `~/downsampled/request_full_sync` | `r3v_interfaces/FullSyncRequest` | in |
 | `~/clear_voxels` | `std_msgs/Empty` | in |
 | `~/set_resolution` | `std_msgs/Float64` | in |
 | `~/set_destroy_threshold`, `set_construct_threshold`, `set_max_value` | `std_msgs/UInt32` | in |
@@ -28,8 +28,8 @@ with their default in parentheses, or fixed names relative to the node (`~/`).
 | `~/point_clouds/<name>/set_hit_multiplier`, `set_target_multiplier` | `std_msgs/UInt32` | in |
 | `~/downsampling/set_enabled` | `std_msgs/Bool` | in |
 | `~/downsampling/set_voxel_size`, `set_threshold` | `std_msgs/UInt32` | in |
-| `voxel_stream.topic` (`/r3v/voxels`) | `r3v_ros/VoxelMapUpdate` (reliable) | out |
-| `voxel_stream.downsampled_topic` (`/r3v/voxels_downsampled`) | `r3v_ros/VoxelMapUpdate` (reliable) | out |
+| `voxel_stream.topic` (`/r3v/voxels`) | `r3v_interfaces/VoxelMapUpdate` (reliable) | out |
+| `voxel_stream.downsampled_topic` (`/r3v/voxels_downsampled`) | `r3v_interfaces/VoxelMapUpdate` (reliable) | out |
 
 ## r3v_renderer
 
@@ -37,8 +37,8 @@ with their default in parentheses, or fixed names relative to the node (`~/`).
 |---|---|---|
 | `tf_topic` (`/tf`), `tf_static_topic` (`/tf_static`) | `tf2_msgs/TFMessage` | in |
 | `robot_description.topic` (`/robot_description`) | `std_msgs/String` (transient local) | in |
-| `voxel_stream.topic` (`/r3v/voxels`) | `r3v_ros/VoxelMapUpdate` (reliable) | in |
-| `voxel_stream.downsampled_topic` (`/r3v/voxels_downsampled`) | `r3v_ros/VoxelMapUpdate` (reliable) | in |
+| `voxel_stream.topic` (`/r3v/voxels`) | `r3v_interfaces/VoxelMapUpdate` (reliable) | in |
+| `voxel_stream.downsampled_topic` (`/r3v/voxels_downsampled`) | `r3v_interfaces/VoxelMapUpdate` (reliable) | in |
 | `~/set_enabled` | `std_msgs/Bool` | in |
 | `~/set_mode` | `std_msgs/String` | in |
 | `camera.pose_topic` (`~/camera_pose`) | `geometry_msgs/PoseStamped` | in |
@@ -51,8 +51,8 @@ with their default in parentheses, or fixed names relative to the node (`~/`).
 | `~/colormap/set_height_relative` | `std_msgs/Bool` | in |
 | `~/colormap/set_height_offset`, `set_height_scale` | `std_msgs/Float64` | in |
 | `~/colormap/set_height_bands` | `std_msgs/UInt32` | in |
-| `voxel_stream.request_topic` (`/r3v_voxelizer/request_full_sync`) | `r3v_ros/FullSyncRequest` | out |
-| `voxel_stream.downsampled_request_topic` (`/r3v_voxelizer/downsampled/request_full_sync`) | `r3v_ros/FullSyncRequest` | out |
+| `voxel_stream.request_topic` (`/r3v_voxelizer/request_full_sync`) | `r3v_interfaces/FullSyncRequest` | out |
+| `voxel_stream.downsampled_request_topic` (`/r3v_voxelizer/downsampled/request_full_sync`) | `r3v_interfaces/FullSyncRequest` | out |
 | `output.topic` (`/r3v/image`) + transports | `sensor_msgs/Image` (best effort, `output.qos`) | out |
 | `output.downsampled_topic` (`/r3v/image_downsampled`) + transports | `sensor_msgs/Image` (best effort, `output.qos`) | out |
 
@@ -88,7 +88,7 @@ These topics change the scene at runtime. Each message replaces the previous
 state rather than adding to it, so publishing the same one again is harmless.
 Invalid values are logged and ignored.
 
-Every setting starts from a parameter of [config/r3v.yaml](../config/r3v.yaml),
+Every setting starts from a parameter of [config/r3v.yaml](../r3v_ros/config/r3v.yaml),
 listed in the "Starts from" column.
 
 ### r3v_voxelizer

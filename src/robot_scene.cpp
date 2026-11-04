@@ -173,7 +173,7 @@ void RobotScene::load(const std::string& urdf_xml, rr::R3vWgpuRenderer* renderer
 
   for (auto& [key, instances] : by_geometry) {
     const Triangles& triangles = cache_.at(key);
-    MeshPtr mesh(rr::r3v_stl_mesh_from_triangles(triangles.data(), triangles.size()));
+    MeshPtr mesh(rr::r3v_mesh_from_triangles(triangles.data(), triangles.size()));
     if (!mesh) {
       throw std::runtime_error("creating mesh '" + key + "' failed: " + lastRendererError());
     }

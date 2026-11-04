@@ -16,7 +16,7 @@ struct TesselatorDeleter {
   void operator()(rr::R3vCpuTesselator* p) const { rr::r3v_cpu_tesselator_drop(p); }
 };
 struct MeshDeleter {
-  void operator()(rr::R3vStlMesh* p) const { rr::r3v_stl_mesh_drop(p); }
+  void operator()(rr::R3vMesh* p) const { rr::r3v_mesh_drop(p); }
 };
 struct GeometryDeltaDeleter {
   void operator()(rr::R3vGeometryDelta* p) const { rr::r3v_geometry_delta_drop(p); }
@@ -24,7 +24,7 @@ struct GeometryDeltaDeleter {
 
 using RendererPtr = std::unique_ptr<rr::R3vWgpuRenderer, RendererDeleter>;
 using TesselatorPtr = std::unique_ptr<rr::R3vCpuTesselator, TesselatorDeleter>;
-using MeshPtr = std::unique_ptr<rr::R3vStlMesh, MeshDeleter>;
+using MeshPtr = std::unique_ptr<rr::R3vMesh, MeshDeleter>;
 using GeometryDeltaPtr = std::unique_ptr<rr::R3vGeometryDelta, GeometryDeltaDeleter>;
 
 // Message of the last r3v-renderer failure on this thread.

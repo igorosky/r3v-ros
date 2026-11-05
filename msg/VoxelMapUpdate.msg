@@ -1,5 +1,6 @@
 # One message of the voxel stream: a change of the voxel map built by
-# r3v_voxelizer_node, or the whole map. See README.md for the protocol.
+# r3v_voxelizer_node, or the whole map. See docs/voxel-stream.md for the
+# protocol.
 
 # Blocks that changed since the previous message of the session.
 uint8 DELTA=0

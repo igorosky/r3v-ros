@@ -34,8 +34,8 @@
 namespace r3v_ros {
 
 // Renders the robot from robot_description + TF and the voxel map of the
-// voxel stream (see README.md) a voxelizer node publishes, and publishes it
-// as an image stream.
+// voxel stream (see docs/voxel-stream.md) a voxelizer node publishes, and
+// publishes it as an image stream.
 //
 // Wants a multi-threaded executor: the voxel stream is decoded on its own
 // callback group while frames render.

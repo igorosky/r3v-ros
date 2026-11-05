@@ -31,7 +31,7 @@
 namespace r3v_ros {
 
 // Builds a voxel map from any number of point clouds and publishes it on the
-// voxel stream (see README.md), which renderer nodes follow.
+// voxel stream (see docs/voxel-stream.md), which renderer nodes follow.
 //
 // Needs a multi-threaded executor: point clouds wait for TF, which arrives
 // on another callback group.

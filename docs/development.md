@@ -58,3 +58,26 @@ GitHub Actions, [.github/workflows/ci.yml](../.github/workflows/ci.yml):
 | `lint` | cpplint and uncrustify on Humble, without building |
 | `build` | Build and `colcon test` on Humble and Jazzy, warnings are errors. The uncrustify test runs on Humble only. |
 | `docker` | Builds the Docker image for Humble and Jazzy (not pushed) |
+
+## Coverage
+
+[.github/workflows/coverage.yml](../.github/workflows/coverage.yml) builds on
+Humble with `--coverage`, runs the gtest suites and turns the gcov data into a
+coverview page. It covers the C++ code of this package only: the generated
+message code, the tests and the submodules are left out (the crates have their
+own reports). Files no test reaches are listed at 0%.
+
+The report for master is at https://igorosky.github.io/r3v-ros/. Pull requests
+with the `coverage` label get a summary comment and the report as a run
+artifact, plus a report of the changed lines.
+
+Locally, in a colcon workspace:
+
+```bash
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_CXX_FLAGS="--coverage -fprofile-update=atomic"
+colcon test --packages-select r3v_ros --ctest-args -L gtest
+```
+
+Then run [fastcov](https://github.com/RPGillespie6/fastcov) over
+`build/r3v_ros` as in the `Collect coverage` step of the workflow.

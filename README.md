@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/igorosky/r3v-ros/actions/workflows/ci.yml"><img src="https://github.com/igorosky/r3v-ros/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://igorosky.github.io/r3v-ros/"><img src="https://github.com/igorosky/r3v-ros/actions/workflows/coverage.yml/badge.svg" alt="Coverage"></a>
   <img src="https://img.shields.io/badge/ROS%202-Humble%20%7C%20Jazzy-blue" alt="ROS 2 Humble | Jazzy">
 </p>
 
@@ -140,8 +141,8 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 colcon test --packages-select r3v_ros && colcon test-result --verbose
 ```
 
-Needs ROS 2 Humble or Jazzy and Rust from rustup. Details, linters and CI are
-in [docs/development.md](docs/development.md).
+Needs ROS 2 Humble or Jazzy and Rust from rustup. Details, linters, CI and
+coverage are in [docs/development.md](docs/development.md).
 
 ## Part of r3v
 

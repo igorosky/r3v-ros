@@ -1,0 +1,139 @@
+name: Coverage
+
+# Runs on master and on pull requests with the `coverage` label. The report is
+# a coverview page: an artifact of every run, on GitHub Pages for master.
+# Covers the C++ code of this package (gcov). The Rust crates have their own
+# reports in their repositories.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  coverage:
+    # On pull requests only with the label, and adding another label does not
+    # start a new run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'coverage') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'coverage'))
+    runs-on: ubuntu-24.04
+    container: ros:humble-ros-base
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # git before the checkout, otherwise it downloads a tarball without the
+      # submodules.
+      - name: Install the build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates cmake curl git \
+            python3-colcon-common-extensions python3-venv
+          git config --global --add safe.directory '*'
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          path: src/r3v_ros
+          # The patch report needs the merge base with master.
+          fetch-depth: 0
+
+      # Ubuntu's rustc is too old for the r3v crates (edition 2024).
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install the dependencies
+        run: |
+          rosdep update --rosdistro "${ROS_DISTRO}"
+          rosdep install --from-paths src --ignore-src -y --rosdistro "${ROS_DISTRO}"
+
+      # The Rust crates build exactly as in the build job of ci.yml, so this
+      # reuses its cache (same key) and does not save one of its own.
+      - name: Cargo cache key
+        id: cargo-key
+        run: |
+          key=$( { git -C src/r3v_ros submodule status; rustc -V; } | sha256sum | cut -c1-16)
+          echo "key=${key}" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            cargo-target
+          key: cargo-humble-${{ steps.cargo-key.outputs.key }}
+          restore-keys: cargo-humble-
+
+      # Atomic counters: the nodes are multi-threaded.
+      - name: Build
+        run: |
+          # shellcheck source=/dev/null
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          colcon build --event-handlers console_direct+ \
+            --cmake-args -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="--coverage -fprofile-update=atomic" \
+            -DR3V_CARGO_TARGET_DIR="${GITHUB_WORKSPACE}/cargo-target"
+
+      # Only the gtest suites, the linters are checked by ci.yml.
+      - name: Test
+        run: |
+          # shellcheck source=/dev/null
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          colcon test --event-handlers console_direct+ --ctest-args -L gtest
+          colcon test-result --verbose
+
+      # --process-gcno keeps the files no test reaches (at 0%). Generated
+      # message code, the tests and the submodules are left out.
+      - name: Collect coverage
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/fastcov"
+          "${RUNNER_TEMP}/fastcov/bin/pip" install --quiet "fastcov==1.17"
+          ws="${GITHUB_WORKSPACE}"
+          "${RUNNER_TEMP}/fastcov/bin/fastcov" \
+            --search-directory build/r3v_ros \
+            --process-gcno \
+            --branch-coverage \
+            --exclude /usr/ /opt/ros/ "${ws}/build/" "${ws}/install/" \
+              "${ws}/src/r3v_ros/test/" "${ws}/src/r3v_ros/r3v-renderer/" \
+              "${ws}/src/r3v_ros/r3v-voxelizer/" \
+            --jobs "$(nproc)" \
+            --lcov \
+            --output coverage.info
+
+      - uses: ./src/r3v_ros/.github/actions/coverview
+        with:
+          info: coverage.info
+          repo-root: src/r3v_ros
+          pathspec: "*.cpp *.hpp"
+          title: r3v-ros coverage
+          dataset: colcon-test
+          pages: ${{ github.ref == 'refs/heads/master' && github.event_name != 'pull_request' }}
+
+  deploy:
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    needs: coverage
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

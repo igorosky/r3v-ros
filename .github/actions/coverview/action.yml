@@ -1,0 +1,395 @@
+# Turns lcov coverage data into a coverview page (antmicro/coverview).
+#
+# On pull requests it also builds a patch coverage report (only the lines the
+# PR adds) and comments a summary on the PR. With `pages: true` the full report
+# is uploaded as the GitHub Pages artifact, the workflow deploys it.
+#
+# Every r3v repository has a byte identical copy of this directory. Change all
+# of them together.
+name: coverview
+description: Coverage report as a coverview page, patch coverage and PR comment
+
+inputs:
+  info:
+    description: >-
+      lcov files, whitespace separated, globs allowed. They are merged into one
+      report. SF paths may be absolute or relative to repo-root.
+    required: true
+  repo-root:
+    description: Path of the repository checkout
+    default: .
+  pathspec:
+    description: >-
+      Git pathspecs (whitespace separated) of the sources the patch report
+      looks at, e.g. "*.rs"
+    required: true
+  title:
+    description: Report title
+    required: true
+  dataset:
+    description: Dataset name shown in coverview, e.g. "cargo-test"
+    required: true
+  pages:
+    description: Upload the full report as the GitHub Pages artifact
+    default: "false"
+  coverview-ref:
+    description: antmicro/coverview commit
+    default: 9d2148dd525d9ad3cce62c9363fea219a541e963
+
+outputs:
+  line-pct:
+    description: Line coverage of the full report in percent, or n/a
+    value: ${{ steps.summary.outputs.line_pct }}
+
+runs:
+  using: composite
+  steps:
+    # Paths: $GITHUB_WORKSPACE and $RUNNER_TEMP, not the github.workspace and
+    # runner.temp contexts, which hold host paths in container jobs. The
+    # outputs live in .coverview under the workspace so the upload steps can
+    # use relative paths.
+    - name: Install fastcov
+      shell: bash
+      run: |
+        python3 -m venv "${RUNNER_TEMP}/coverview-venv"
+        "${RUNNER_TEMP}/coverview-venv/bin/pip" install --quiet "fastcov==1.17"
+
+    - name: Merge coverage data
+      shell: bash
+      env:
+        INFO: ${{ inputs.info }}
+        REPO_ROOT: ${{ inputs.repo-root }}
+      run: |
+        out="${GITHUB_WORKSPACE}/.coverview"
+        rm -rf "${out}"
+        mkdir -p "${out}"
+        root=$(cd "${REPO_ROOT}" && pwd)
+
+        # shellcheck disable=SC2206 # splitting and globbing are wanted here
+        files=(${INFO})
+        for f in "${files[@]}"; do
+          if [[ ! -f "${f}" ]]; then
+            echo "::error::coverage file not found: ${f}"
+            exit 1
+          fi
+        done
+        "${RUNNER_TEMP}/coverview-venv/bin/fastcov" --add-tracefile "${files[@]}" --branch-coverage --lcov \
+          --output "${out}/coverage.info"
+
+        # Absolute paths for --diff-filter, made relative again later.
+        sed -i -E "s|^SF:([^/])|SF:${root}/\1|" "${out}/coverage.info"
+        if ! grep -q '^SF:' "${out}/coverage.info"; then
+          echo "::error::the coverage data names no source file"
+          exit 1
+        fi
+
+    # On a pull_request event HEAD is the merge commit, so the merge base with
+    # the base branch is the base tip this run was built on.
+    - name: Compute patch diff
+      id: patch_diff
+      if: github.event_name == 'pull_request'
+      shell: bash
+      working-directory: ${{ inputs.repo-root }}
+      env:
+        PATHSPEC: ${{ inputs.pathspec }}
+        BASE_REF: ${{ github.event.pull_request.base.ref }}
+        FALLBACK_SHA: ${{ github.event.pull_request.base.sha }}
+      run: |
+        out="${GITHUB_WORKSPACE}/.coverview"
+        git config --global --add safe.directory "${PWD}"
+        git fetch --no-tags --quiet origin \
+          "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" || true
+
+        base=$(git merge-base "origin/${BASE_REF}" HEAD || true)
+        if [[ -z "${base}" ]]; then
+          echo "::warning::git merge-base failed (checkout without fetch-depth: 0?), using the PR base sha"
+          base="${FALLBACK_SHA}"
+        fi
+        echo "Patch coverage base: ${base}"
+
+        # Only the sources the report can describe: fastcov's diff parser
+        # fails on binary or mode change hunks.
+        read -ra pathspec <<< "${PATHSPEC}"
+        git diff --no-color --no-ext-diff "${base}" HEAD -- "${pathspec[@]}" > "${out}/patch.diff"
+        changed=$(git diff --name-only "${base}" HEAD -- "${pathspec[@]}" | wc -l)
+        git --no-pager diff --stat "${base}" HEAD -- "${pathspec[@]}"
+
+        {
+          echo "base_sha=${base}"
+          echo "changed_files=${changed}"
+          if [[ -s "${out}/patch.diff" ]]; then
+            echo "has_diff=true"
+          else
+            echo "has_diff=false"
+          fi
+        } >> "${GITHUB_OUTPUT}"
+
+    # --diff-filter keeps the files named in the diff and, in them, only the
+    # added lines. --diff-base-dir is joined with the diff's b/ paths, so this
+    # runs while the SF paths are still absolute.
+    - name: Patch coverage report
+      id: patch_report
+      if: github.event_name == 'pull_request' && steps.patch_diff.outputs.has_diff == 'true'
+      shell: bash
+      env:
+        REPO_ROOT: ${{ inputs.repo-root }}
+      run: |
+        out="${GITHUB_WORKSPACE}/.coverview"
+        root=$(cd "${REPO_ROOT}" && pwd)
+        "${RUNNER_TEMP}/coverview-venv/bin/fastcov" --add-tracefile "${out}/coverage.info" \
+          --diff-filter "${out}/patch.diff" --diff-base-dir "${root}" \
+          --branch-coverage --lcov --output "${out}/patch.info"
+
+        # No SF record: the diff adds no line with coverage data (comments,
+        # declarations, files no test reaches).
+        if grep -q '^SF:' "${out}/patch.info"; then
+          echo "has_data=true" >> "${GITHUB_OUTPUT}"
+        else
+          echo "has_data=false" >> "${GITHUB_OUTPUT}"
+        fi
+
+    - name: Make source paths relative
+      shell: bash
+      env:
+        REPO_ROOT: ${{ inputs.repo-root }}
+      run: |
+        out="${GITHUB_WORKSPACE}/.coverview"
+        root=$(cd "${REPO_ROOT}" && pwd)
+        for info in "${out}/coverage.info" "${out}/patch.info"; do
+          if [[ -f "${info}" ]]; then
+            sed -i "s|^SF:${root}/|SF:|" "${info}"
+          fi
+        done
+
+    - name: Compute coverage summary
+      id: summary
+      shell: bash
+      run: |
+        out="${GITHUB_WORKSPACE}/.coverview"
+        # $1 = info file, $2 = output prefix. No instrumented line or branch
+        # reports n/a rather than 0%.
+        summarize() {
+          awk -F: -v p="$2" '
+            /^LF:/ { lf += $2 }
+            /^LH:/ { lh += $2 }
+            /^BRF:/ { brf += $2 }
+            /^BRH:/ { brh += $2 }
+            END {
+              if (lf > 0) printf "%sline_pct=%.2f\n", p, lh / lf * 100
+              else printf "%sline_pct=n/a\n", p
+              if (brf > 0) printf "%sbranch_pct=%.2f\n", p, brh / brf * 100
+              else printf "%sbranch_pct=n/a\n", p
+              printf "%slines=%d/%d\n", p, lh, lf
+              printf "%sbranches=%d/%d\n", p, brh, brf
+            }
+          ' "$1" >> "${GITHUB_OUTPUT}"
+        }
+        summarize "${out}/coverage.info" ""
+        if [[ -f "${out}/patch.info" ]]; then
+          summarize "${out}/patch.info" "patch_"
+        fi
+
+    - name: Prepare coverview data
+      shell: bash
+      env:
+        REPO_ROOT: ${{ inputs.repo-root }}
+        TITLE: ${{ inputs.title }}
+        DATASET: ${{ inputs.dataset }}
+        REPO: ${{ github.repository }}
+        BRANCH: ${{ github.head_ref || github.ref_name }}
+        COMMIT: ${{ github.sha }}
+        HAS_PATCH: ${{ steps.patch_report.outputs.has_data }}
+        BASE_SHA: ${{ steps.patch_diff.outputs.base_sha }}
+      run: |
+        out="${GITHUB_WORKSPACE}/.coverview"
+        # $1 = lcov file, $2 = data directory, $3 = title, $4 = branch
+        gen() {
+          python3 "${GITHUB_ACTION_PATH}/gen-coverview-data.py" \
+            --info "$1" --out-dir "$2" --repo-root "${REPO_ROOT}" \
+            --repo "${REPO}" --title "$3" --dataset "${DATASET}" \
+            --branch "$4" --commit "${COMMIT}"
+        }
+        gen "${out}/coverage.info" "${out}/data" "${TITLE}" "${BRANCH}"
+        if [[ "${HAS_PATCH}" == true ]]; then
+          gen "${out}/patch.info" "${out}/patch" "${TITLE} (patch)" \
+            "${BRANCH} (patch vs ${BASE_SHA:0:8})"
+        fi
+
+    - name: Fetch coverview
+      shell: bash
+      env:
+        REF: ${{ inputs.coverview-ref }}
+      run: |
+        out="${GITHUB_WORKSPACE}/.coverview"
+        git clone --quiet https://github.com/antmicro/coverview.git "${out}/coverview"
+        git -C "${out}/coverview" checkout --quiet "${REF}"
+
+    # Restore only: embed.py edits dist/ in place, a cache saved at the end of
+    # the job would hold the embedded page of this run.
+    - name: Restore the coverview build
+      id: coverview_cache
+      uses: actions/cache/restore@v6
+      with:
+        path: .coverview/coverview/dist
+        key: coverview-dist-${{ inputs.coverview-ref }}
+
+    - name: Set up Node for coverview
+      if: steps.coverview_cache.outputs.cache-hit != 'true'
+      uses: actions/setup-node@v7
+      with:
+        node-version: 22
+
+    - name: Build coverview
+      id: coverview_build
+      if: steps.coverview_cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cd "${GITHUB_WORKSPACE}/.coverview/coverview"
+        npm ci --no-audit --no-fund
+        npm run build
+
+    # Saved before the embed step, so the cache only holds an untouched build.
+    - name: Save the coverview build
+      if: steps.coverview_cache.outputs.cache-hit != 'true' && steps.coverview_build.outcome == 'success'
+      uses: actions/cache/save@v6
+      with:
+        path: .coverview/coverview/dist
+        key: coverview-dist-${{ inputs.coverview-ref }}
+
+    - name: Embed coverage data
+      shell: bash
+      run: |
+        out="${GITHUB_WORKSPACE}/.coverview"
+        cd "${out}/coverview"
+        cp -a dist dist-pristine
+
+        # $1 = data directory, $2 = site directory
+        embed_site() {
+          rm -rf dist
+          cp -a dist-pristine dist
+          # embed.py silently does nothing without the placeholder, which would
+          # publish an empty page.
+          if ! grep -q 'let originalFiles = {}' dist/index.html; then
+            echo "::error::dist/index.html has no embed placeholder (stale cache?)"
+            exit 1
+          fi
+          python3 embed.py --inject-data "$1"
+          rm -rf dist/assets dist/index.html.bak
+          rm -rf "$2"
+          mv dist "$2"
+        }
+        embed_site "${out}/data" "${out}/site"
+        if [[ -f "${out}/patch/config.json" ]]; then
+          embed_site "${out}/patch" "${out}/site-patch"
+        fi
+
+    - name: Upload coverage data
+      id: upload_data
+      uses: actions/upload-artifact@v7
+      with:
+        name: coverage-data
+        path: |
+          .coverview/coverage.info
+          .coverview/patch.info
+          .coverview/patch.diff
+        if-no-files-found: ignore
+        retention-days: 14
+
+    - name: Upload coverview page
+      id: upload_site
+      uses: actions/upload-artifact@v7
+      with:
+        name: coverview-site
+        path: .coverview/site
+        retention-days: 14
+
+    - name: Upload patch coverview page
+      id: upload_patch_site
+      if: steps.patch_report.outputs.has_data == 'true'
+      uses: actions/upload-artifact@v7
+      with:
+        name: coverview-site-patch
+        path: .coverview/site-patch
+        retention-days: 14
+
+    - name: Upload Pages artifact
+      if: inputs.pages == 'true'
+      uses: actions/upload-pages-artifact@v5
+      with:
+        path: .coverview/site
+
+    - name: Write summary
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        LINE_PCT: ${{ steps.summary.outputs.line_pct }}
+        # Not LINES: bash sets that to the terminal height.
+        LINE_COUNTS: ${{ steps.summary.outputs.lines }}
+        BRANCH_PCT: ${{ steps.summary.outputs.branch_pct }}
+        BRANCH_COUNTS: ${{ steps.summary.outputs.branches }}
+        PATCH_LINE_PCT: ${{ steps.summary.outputs.patch_line_pct }}
+        PATCH_LINE_COUNTS: ${{ steps.summary.outputs.patch_lines }}
+        PATCH_BRANCH_PCT: ${{ steps.summary.outputs.patch_branch_pct }}
+        PATCH_BRANCH_COUNTS: ${{ steps.summary.outputs.patch_branches }}
+        PATCH_HAS_DATA: ${{ steps.patch_report.outputs.has_data }}
+        PATCH_HAS_DIFF: ${{ steps.patch_diff.outputs.has_diff }}
+        PATCH_FILES: ${{ steps.patch_diff.outputs.changed_files }}
+        BASE_SHA: ${{ steps.patch_diff.outputs.base_sha }}
+        DATA_URL: ${{ steps.upload_data.outputs.artifact-url }}
+        SITE_URL: ${{ steps.upload_site.outputs.artifact-url }}
+        PATCH_SITE_URL: ${{ steps.upload_patch_site.outputs.artifact-url }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        out="${GITHUB_WORKSPACE}/.coverview"
+        # $1 = percentage or n/a, $2 = hit/total
+        cell() {
+          if [[ -z "$1" || "$1" == n/a ]]; then
+            printf 'n/a'
+          else
+            printf '%s%% (%s)' "$1" "$2"
+          fi
+        }
+
+        {
+          echo "### Coverage report"
+          echo
+          echo "| Report | Lines | Branches |"
+          echo "| --- | --- | --- |"
+          echo "| Full tree | $(cell "${LINE_PCT}" "${LINE_COUNTS}") | $(cell "${BRANCH_PCT}" "${BRANCH_COUNTS}") |"
+          if [[ "${EVENT}" == pull_request ]]; then
+            base="\`${BASE_SHA:0:8}\`"
+            if [[ "${PATCH_HAS_DATA}" == true ]]; then
+              echo "| Patch (vs ${base}) | $(cell "${PATCH_LINE_PCT}" "${PATCH_LINE_COUNTS}") | $(cell "${PATCH_BRANCH_PCT}" "${PATCH_BRANCH_COUNTS}") |"
+            elif [[ "${PATCH_HAS_DIFF}" == true ]]; then
+              echo "| Patch (vs ${base}) | no added instrumented lines in ${PATCH_FILES} changed file(s) | n/a |"
+            else
+              echo "| Patch (vs ${base}) | no source files changed | n/a |"
+            fi
+          fi
+          echo
+          echo "- Full report (\`coverview-site\`): ${SITE_URL}"
+          if [[ "${PATCH_HAS_DATA}" == true ]]; then
+            echo "- Patch report (\`coverview-site-patch\`): ${PATCH_SITE_URL}"
+          fi
+          echo "- Raw data (\`coverage-data\`): ${DATA_URL}"
+          echo "- Workflow run: ${RUN_URL}"
+        } > "${out}/summary.md"
+        cat "${out}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
+
+    # A new comment on every run, so each push leaves an entry in the PR.
+    # Fails softly: fork PRs get a read-only token.
+    - name: Comment on the PR
+      if: github.event_name == 'pull_request'
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        URL: ${{ github.api_url }}/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments
+      run: |
+        python3 -c 'import json, sys; json.dump({"body": sys.stdin.read()}, sys.stdout)' \
+          < "${GITHUB_WORKSPACE}/.coverview/summary.md" \
+          | curl -fsSL -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              --data-binary @- "${URL}" > /dev/null

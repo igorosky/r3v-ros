@@ -19,6 +19,13 @@
   between voxels that only touch at an edge.
 - **Map.** Voxels live in the fixed frame and accumulate over time. Rays clear
   the voxels they pass through.
+- **Clearing.** `~/clear_voxels` empties the map in place. A change of the
+  resolution, a threshold or `max_value` makes a new voxelizer, so it clears
+  the map too. Multiplier changes keep the map and apply to the points that
+  follow.
+- **Downsampling.** The downsampled stream costs the voxelizer nothing while
+  nobody follows it. Rendering both views takes two GPU renderers, each with
+  its own copy of the robot meshes.
 - **Robot pose.** Robot links (and a camera frame that is a robot link) are
   posed from two latest TF lookups, fixed frame to URDF root and root to link,
   rather than one through both. Robot pose and joint states may be stamped by

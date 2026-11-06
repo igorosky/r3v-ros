@@ -50,6 +50,10 @@ constexpr uint32_t kMaxHeightBands = 256;
 // in meters. Spares reconfiguring the renderer on every bit of noise.
 constexpr double kHeightReferenceStep = 0.01;
 
+bool validMode(const std::string& mode) {
+  return mode == "none" || mode == "full" || mode == "downsampled" || mode == "both";
+}
+
 }  // namespace
 
 RendererNode::RendererNode(const rclcpp::NodeOptions& options)
@@ -58,8 +62,6 @@ RendererNode::RendererNode(const rclcpp::NodeOptions& options)
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
   tf_buffer_->setUsingDedicatedThread(true);
-
-  createRenderer();
 
   robot_ = std::make_unique<RobotScene>(
     get_logger(), get_clock(), MeshLoader(package_paths_), double_sided_);
@@ -70,14 +72,15 @@ RendererNode::RendererNode(const rclcpp::NodeOptions& options)
       file.good(), "cannot open robot_description.file '" + robot_description_file_ + "'");
     std::stringstream urdf_xml;
     urdf_xml << file.rdbuf();
-    robot_->load(urdf_xml.str(), renderer_.get());
+    robot_->load(urdf_xml.str());
   }
 
+  // Makes the renderers of the views the node starts with, so a missing GPU
+  // stops it here.
   createInterfaces();
   RCLCPP_INFO(
-    get_logger(), "Rendering %ux%u at %.1f Hz to '%s' (fixed frame '%s', voxels from '%s'), %s",
-    width_, height_, rate_, image_pub_.getTopic().c_str(), fixed_frame_.c_str(),
-    stream_topic_.c_str(), enabled_ ? "enabled" : "disabled");
+    get_logger(), "Rendering %ux%u at %.1f Hz (fixed frame '%s'), mode %s, %s", width_, height_,
+    rate_, fixed_frame_.c_str(), mode_.c_str(), enabled_ ? "enabled" : "disabled");
 }
 
 void RendererNode::declareParameters() {
@@ -86,17 +89,30 @@ void RendererNode::declareParameters() {
   tf_topic_ = declare_parameter<std::string>("tf_topic", "/tf");
   tf_static_topic_ = declare_parameter<std::string>("tf_static_topic", "/tf_static");
   enabled_ = declare_parameter<bool>("enabled", true);
+  mode_ = declare_parameter<std::string>("mode", "full");
   require(!fixed_frame_.empty(), "fixed_frame must not be empty");
   require(rate_ > 0.0, "rate must be positive");
+  require(validMode(mode_), "mode must be none, full, downsampled or both");
 
-  stream_topic_ = declare_parameter<std::string>("voxel_stream.topic", "/r3v/voxels");
+  View& full = views_[kFullView];
+  View& downsampled = views_[kDownsampledView];
+  full.stream_topic = declare_parameter<std::string>("voxel_stream.topic", "/r3v/voxels");
+  downsampled.stream_topic = declare_parameter<std::string>(
+    "voxel_stream.downsampled_topic", "/r3v/voxels_downsampled");
   const int64_t depth = declare_parameter<int64_t>("voxel_stream.depth", 100);
-  request_topic_ = declare_parameter<std::string>(
+  full.request_topic = declare_parameter<std::string>(
     "voxel_stream.request_topic", "/r3v_voxelizer/request_full_sync");
+  downsampled.request_topic = declare_parameter<std::string>(
+    "voxel_stream.downsampled_request_topic", "/r3v_voxelizer/downsampled/request_full_sync");
   sync_retry_ = declare_parameter<double>("voxel_stream.sync_retry", 1.0);
-  require(!stream_topic_.empty(), "voxel_stream.topic must not be empty");
+  require(!full.stream_topic.empty(), "voxel_stream.topic must not be empty");
+  require(
+    !downsampled.stream_topic.empty(), "voxel_stream.downsampled_topic must not be empty");
   require(depth >= 1 && depth <= 100000, "voxel_stream.depth must be between 1 and 100000");
-  require(!request_topic_.empty(), "voxel_stream.request_topic must not be empty");
+  require(!full.request_topic.empty(), "voxel_stream.request_topic must not be empty");
+  require(
+    !downsampled.request_topic.empty(),
+    "voxel_stream.downsampled_request_topic must not be empty");
   require(sync_retry_ > 0.0, "voxel_stream.sync_retry must be positive");
   stream_depth_ = static_cast<size_t>(depth);
 
@@ -118,7 +134,12 @@ void RendererNode::declareParameters() {
       require(v.size() == 3, name + " must have 3 elements");
       return Eigen::Vector3d(v[0], v[1], v[2]);
     };
-  output_topic_ = declare_parameter<std::string>("output.topic", "/r3v/image");
+  full.output_topic = declare_parameter<std::string>("output.topic", "/r3v/image");
+  downsampled.output_topic =
+    declare_parameter<std::string>("output.downsampled_topic", "/r3v/image_downsampled");
+  require(
+    full.output_topic != downsampled.output_topic,
+    "output.downsampled_topic must differ from output.topic");
   const int64_t width = declare_parameter<int64_t>("output.width", 1280);
   const int64_t height = declare_parameter<int64_t>("output.height", 720);
   encoding_ = declare_parameter<std::string>("output.encoding", enc::BGR8);
@@ -185,29 +206,40 @@ void RendererNode::declareParameters() {
     "colormap.height_bands must be between 0 and " + std::to_string(kMaxHeightBands));
   colormap_.height_bands = static_cast<uint32_t>(bands);
 
-  voxels_visible_ = declare_parameter<bool>("voxels.visible", true);
+  full.voxels_visible = declare_parameter<bool>("voxels.visible", true);
+  downsampled.voxels_visible = declare_parameter<bool>("voxels.downsampled_visible", true);
   marching_cubes_ = declare_parameter<bool>("voxels.marching_cubes", false);
 }
 
-void RendererNode::createRenderer() {
-  renderer_.reset(rr::r3v_wgpu_renderer_create());
-  if (!renderer_) {
+bool RendererNode::modeShows(const std::string& mode, size_t index) {
+  return mode == "both" || mode == (index == kFullView ? "full" : "downsampled");
+}
+
+void RendererNode::createView(View& view) {
+  view.renderer.reset(rr::r3v_wgpu_renderer_create());
+  if (!view.renderer) {
     throw std::runtime_error(
             "creating the renderer failed, no usable GPU adapter (is a Vulkan driver "
             "installed and the GPU device available?): " + lastRendererError());
   }
-  configureRenderer();
-  frame_.resize(static_cast<size_t>(width_) * height_ * 4);
+  configureRenderers();
+  view.frame.resize(static_cast<size_t>(width_) * height_ * 4);
 
-  tesselator_.reset(rr::r3v_cpu_tesselator_create());
-  if (!tesselator_) {
+  view.tesselator.reset(rr::r3v_cpu_tesselator_create());
+  if (!view.tesselator) {
     throw std::runtime_error("creating the tesselator failed: " + lastRendererError());
   }
-  resolution_ = kInitialResolution;
-  configureTesselator();
+  view.resolution = kInitialResolution;
+  configureTesselator(view);
+
+  robot_->addRenderer(view.renderer.get());
+  view.request_pub = create_publisher<msg::FullSyncRequest>(view.request_topic, rclcpp::QoS(10));
+  view.image_pub = image_transport::create_publisher(
+    this, view.output_topic,
+    output_qos_ == "reliable" ? rmw_qos_profile_default : rmw_qos_profile_sensor_data);
 }
 
-void RendererNode::configureRenderer() {
+void RendererNode::configureRenderers() {
   // The same frame size keeps the frame the renderer holds and only changes
   // the settings, which is one small GPU buffer write.
   rr::R3vTerrainColoring coloring = rr::r3v_terrain_coloring_default();
@@ -218,26 +250,35 @@ void RendererNode::configureRenderer() {
   coloring.height_knee = static_cast<float>(colormap_.height_scale);
   coloring.height_gain = static_cast<float>(height_gain_);
   coloring.height_bands = colormap_.height_bands;
-  checkStatus(
-    rr::r3v_wgpu_renderer_configure(
-      renderer_.get(),
-      { width_, height_, background_color_, static_cast<float>(colormap_.depth_range), coloring }),
-    "configuring the renderer");
+  for (View& view : views_) {
+    if (!view.renderer) {
+      continue;
+    }
+    checkStatus(
+      rr::r3v_wgpu_renderer_configure(
+        view.renderer.get(),
+        { width_, height_, background_color_, static_cast<float>(colormap_.depth_range),
+          coloring }),
+      "configuring the renderer");
+  }
 }
 
-void RendererNode::configureTesselator() {
+void RendererNode::configureTesselator(View& view) {
   // Keeps the blocks the tesselator holds.
   checkStatus(
     rr::r3v_cpu_tesselator_configure(
-      tesselator_.get(), { static_cast<float>(resolution_), marching_cubes_ }),
+      view.tesselator.get(), { static_cast<float>(view.resolution), marching_cubes_ }),
     "configuring the tesselator");
 }
 
 void RendererNode::createInterfaces() {
   tf_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  stream_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   render_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   control_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  for (View& view : views_) {
+    // The views decode their streams side by side.
+    view.stream_group = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  }
 
   // Runtime controls only queue their change for the next onRender(). In the
   // render group they could wait forever: a render longer than its period
@@ -249,6 +290,18 @@ void RendererNode::createInterfaces() {
     [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
       std::lock_guard<std::mutex> lock(controls_mutex_);
       controls_.enabled = msg->data;
+    }, control_options);
+  mode_sub_ = create_subscription<std_msgs::msg::String>(
+    "~/set_mode", rclcpp::QoS(10),
+    [this](std_msgs::msg::String::ConstSharedPtr msg) {
+      if (!validMode(msg->data)) {
+        RCLCPP_WARN(
+          get_logger(), "Ignoring mode '%s': must be none, full, downsampled or both",
+          msg->data.c_str());
+        return;
+      }
+      std::lock_guard<std::mutex> lock(controls_mutex_);
+      controls_.mode = msg->data;
     }, control_options);
   if (!camera_pose_topic_.empty()) {
     camera_pose_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
@@ -262,12 +315,16 @@ void RendererNode::createInterfaces() {
     "~/hidden_links", rclcpp::QoS(10),
     [this](std_msgs::msg::String::ConstSharedPtr msg) { onHiddenLinks(msg->data); },
     control_options);
-  voxels_visible_sub_ = create_subscription<std_msgs::msg::Bool>(
-    "~/voxels_visible", rclcpp::QoS(10),
-    [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
-      std::lock_guard<std::mutex> lock(controls_mutex_);
-      controls_.voxels_visible = msg->data;
-    }, control_options);
+  const std::array<const char*, 2> visible_topics = {
+    "~/voxels_visible", "~/downsampled/voxels_visible" };
+  for (size_t index = 0; index < views_.size(); ++index) {
+    views_[index].voxels_visible_sub = create_subscription<std_msgs::msg::Bool>(
+      visible_topics[index], rclcpp::QoS(10),
+      [this, index](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        std::lock_guard<std::mutex> lock(controls_mutex_);
+        controls_.voxels_visible[index] = msg->data;
+      }, control_options);
+  }
   // Values the renderer rejects are dropped here, failing there stops the node.
   marching_cubes_sub_ = create_subscription<std_msgs::msg::Bool>(
     "~/marching_cubes/set_enabled", rclcpp::QoS(10),
@@ -290,27 +347,22 @@ void RendererNode::createInterfaces() {
 
   const rclcpp::QoS state_qos = rclcpp::QoS(1).reliable().transient_local();
   enabled_pub_ = create_publisher<std_msgs::msg::Bool>("~/get_enabled", state_qos);
+  mode_pub_ = create_publisher<std_msgs::msg::String>("~/get_mode", state_qos);
   marching_cubes_pub_ =
     create_publisher<std_msgs::msg::Bool>("~/marching_cubes/get_enabled", state_qos);
   background_color_pub_ =
     create_publisher<std_msgs::msg::ColorRGBA>("~/background/get_color", state_qos);
   publishEnabled();
+  publishMode();
   publishMarchingCubes();
   publishBackgroundColor();
   createColormapInterfaces(control_options);
 
-  request_pub_ = create_publisher<msg::FullSyncRequest>(request_topic_, rclcpp::QoS(10));
-  if (enabled_) {
-    subscribeInputs();
-  }
-
-  image_pub_ = image_transport::create_publisher(
-    this, output_topic_,
-    output_qos_ == "reliable" ? rmw_qos_profile_default : rmw_qos_profile_sensor_data);
+  updateViews();
   render_timer_ = create_wall_timer(
     std::chrono::duration<double>(1.0 / rate_), [this]() { onRender(); }, render_group_);
   sync_timer_ = create_wall_timer(
-    std::chrono::duration<double>(sync_retry_), [this]() { onSyncRetry(); }, stream_group_);
+    std::chrono::duration<double>(sync_retry_), [this]() { onSyncRetry(); }, control_group_);
 }
 
 void RendererNode::createColormapInterfaces(const rclcpp::SubscriptionOptions& options) {
@@ -399,24 +451,49 @@ void RendererNode::createColormapInterfaces(const rclcpp::SubscriptionOptions& o
   publishColormap();
 }
 
-void RendererNode::subscribeInputs() {
-  {
-    std::lock_guard<std::mutex> lock(stream_mutex_);
-    listening_ = true;
-    ++epoch_;
-    sync_ = StreamSync();
-    pending_ = PendingVoxels();
+void RendererNode::updateViews() {
+  bool any = false;
+  for (size_t index = 0; index < views_.size(); ++index) {
+    View& view = views_[index];
+    const bool active = enabled_ && modeShows(mode_, index);
+    if (active && !view.active) {
+      activateView(view);
+    } else if (!active && view.active) {
+      deactivateView(view);
+    }
+    any = any || active;
   }
+  if (any && !inputs_subscribed_) {
+    subscribeInputs();
+  } else if (!any && inputs_subscribed_) {
+    unsubscribeInputs();
+  }
+}
+
+void RendererNode::activateView(View& view) {
+  // Its GPU resources stay once made, so a view comes back quickly.
+  if (!view.renderer) {
+    createView(view);
+  }
+  // The voxel stream brings the whole map again.
+  subscribeStream(view);
+  view.active = true;
+  RCLCPP_INFO(
+    get_logger(), "Rendering the %s from '%s' to '%s'", view.name,
+    view.stream_sub->get_topic_name(), view.image_pub.getTopic().c_str());
+}
+
+void RendererNode::deactivateView(View& view) {
+  unsubscribeStream(view);
+  view.map.clear();
+  replaceTesselated(view, { });
+  view.rendered_stamp.reset();
+  view.active = false;
+  RCLCPP_INFO(get_logger(), "Stopped rendering the %s", view.name);
+}
+
+void RendererNode::subscribeInputs() {
   tf_subs_ = subscribeTf(*this, *tf_buffer_, tf_topic_, tf_static_topic_, tf_group_);
-
-  rclcpp::SubscriptionOptions stream_options;
-  stream_options.callback_group = stream_group_;
-  // Straight from a voxelizer in the same process (see VoxelizerNode).
-  stream_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Enable;
-  stream_sub_ = create_subscription<VoxelMapUpdate>(
-    stream_topic_, voxelStreamQos(stream_depth_),
-    [this](VoxelMapUpdate::ConstSharedPtr msg) { onVoxelUpdate(*msg); }, stream_options);
-
   if (robot_description_file_.empty() && !robot_description_topic_.empty()) {
     rclcpp::SubscriptionOptions render_options;
     render_options.callback_group = render_group_;
@@ -425,60 +502,87 @@ void RendererNode::subscribeInputs() {
       [this](std_msgs::msg::String::ConstSharedPtr msg) { onRobotDescription(msg->data); },
       render_options);
   }
+  inputs_subscribed_ = true;
 }
 
 void RendererNode::unsubscribeInputs() {
-  {
-    std::lock_guard<std::mutex> lock(stream_mutex_);
-    listening_ = false;
-    ++epoch_;
-    sync_ = StreamSync();
-    pending_ = PendingVoxels();
-  }
   tf_subs_ = TfSubscriptions();
-  stream_sub_.reset();
   robot_description_sub_.reset();
+  // Stale by the time a view runs again.
+  tf_buffer_->clear();
+  inputs_subscribed_ = false;
 }
 
-void RendererNode::onVoxelUpdate(const VoxelMapUpdate& msg) {
+void RendererNode::subscribeStream(View& view) {
+  {
+    std::lock_guard<std::mutex> lock(stream_mutex_);
+    view.listening = true;
+    ++view.epoch;
+    view.sync = StreamSync();
+    view.pending = PendingVoxels();
+  }
+  rclcpp::SubscriptionOptions options;
+  options.callback_group = view.stream_group;
+  // Straight from a voxelizer in the same process (see VoxelizerNode).
+  options.use_intra_process_comm = rclcpp::IntraProcessSetting::Enable;
+  view.stream_sub = create_subscription<VoxelMapUpdate>(
+    view.stream_topic, voxelStreamQos(stream_depth_),
+    [this, &view](VoxelMapUpdate::ConstSharedPtr msg) { onVoxelUpdate(view, *msg); }, options);
+}
+
+void RendererNode::unsubscribeStream(View& view) {
+  {
+    std::lock_guard<std::mutex> lock(stream_mutex_);
+    view.listening = false;
+    ++view.epoch;
+    view.sync = StreamSync();
+    view.pending = PendingVoxels();
+  }
+  view.stream_sub.reset();
+}
+
+void RendererNode::onVoxelUpdate(View& view, const VoxelMapUpdate& msg) {
   if (msg.header.frame_id != fixed_frame_) {
     RCLCPP_WARN_THROTTLE(
-      get_logger(), *get_clock(), 5000, "Ignoring the voxel stream: its voxels are in '%s', "
-      "not in fixed_frame '%s'", msg.header.frame_id.c_str(), fixed_frame_.c_str());
+      get_logger(), *get_clock(), 5000, "Ignoring the stream of the %s: its voxels are in "
+      "'%s', not in fixed_frame '%s'", view.name, msg.header.frame_id.c_str(),
+      fixed_frame_.c_str());
     return;
   }
-  // Only this callback group and setEnabled() change the sync state, and
-  // the stream group runs one callback at a time: the lock is only taken
-  // against setEnabled(), and left while decoding.
+  // Only this callback group and (un)subscribeStream() change the sync state
+  // of the view, and the group runs one callback at a time: the lock is only
+  // taken against the others, and left while decoding.
   std::unique_lock<std::mutex> lock(stream_mutex_);
-  if (!listening_) {
+  if (!view.listening) {
     return;
   }
+  StreamSync& sync = view.sync;
   const bool in_row =
-    sync_.session && *sync_.session == msg.session && msg.sequence == sync_.last + 1;
+    sync.session && *sync.session == msg.session && msg.sequence == sync.last + 1;
   if (!in_row) {
-    if (sync_.session && *sync_.session != msg.session) {
+    if (sync.session && *sync.session != msg.session) {
       RCLCPP_INFO(
-        get_logger(), "New voxelizer session %016" PRIx64 ", synchronizing", msg.session);
-    } else if (sync_.session) {
+        get_logger(), "New voxelizer session %016" PRIx64 ", synchronizing the %s",
+        msg.session, view.name);
+    } else if (sync.session) {
       RCLCPP_WARN(
-        get_logger(), "Voxel stream message %" PRIu64 " follows %" PRIu64 ", synchronizing "
-        "again", msg.sequence, sync_.last);
+        get_logger(), "Message %" PRIu64 " of the %s stream follows %" PRIu64
+        ", synchronizing again", msg.sequence, view.name, sync.last);
     }
     // Every FULL message from here on reaches us, in order.
-    sync_.session = msg.session;
-    sync_.since = msg.sequence;
-    sync_.synced = false;
+    sync.session = msg.session;
+    sync.since = msg.sequence;
+    sync.synced = false;
   }
-  sync_.last = msg.sequence;
-  if (msg.kind == VoxelMapUpdate::DELTA && !sync_.synced) {
+  sync.last = msg.sequence;
+  if (msg.kind == VoxelMapUpdate::DELTA && !sync.synced) {
     if (!in_row) {
-      requestFullSync();  // onSyncRetry() repeats it
+      requestFullSync(view);  // onSyncRetry() repeats it
     }
     return;
   }
-  const uint64_t epoch = epoch_;
-  const double synced_resolution = sync_.resolution;
+  const uint64_t epoch = view.epoch;
+  const double synced_resolution = sync.resolution;
   lock.unlock();
 
   std::optional<std::vector<WireGroup>> groups;
@@ -512,33 +616,33 @@ void RendererNode::onVoxelUpdate(const VoxelMapUpdate& msg) {
   }
 
   lock.lock();
-  if (epoch != epoch_) {
-    return;  // disabled meanwhile
+  if (epoch != view.epoch) {
+    return;  // stopped meanwhile
   }
   if (!error.empty()) {
     RCLCPP_WARN(
-      get_logger(), "Bad voxel stream message %" PRIu64 ": %s; synchronizing again",
-      msg.sequence, error.c_str());
+      get_logger(), "Bad message %" PRIu64 " of the %s stream: %s; synchronizing again",
+      msg.sequence, view.name, error.c_str());
     // A FULL message after this one: this one may be the last FULL.
-    sync_.since = msg.sequence + 1;
-    sync_.synced = false;
-    requestFullSync();
+    sync.since = msg.sequence + 1;
+    sync.synced = false;
+    requestFullSync(view);
     return;
   }
   if (groups) {
-    if (!sync_.synced) {
+    if (!sync.synced) {
       RCLCPP_INFO(
-        get_logger(), "Synchronized with the voxel map: %zu groups at %g m", groups->size(),
-        msg.resolution);
+        get_logger(), "Synchronized with the %s: %zu groups at %g m", view.name,
+        groups->size(), msg.resolution);
     }
-    sync_.synced = true;
-    sync_.resolution = msg.resolution;
+    sync.synced = true;
+    sync.resolution = msg.resolution;
     // It holds every block before it.
-    pending_.full = std::move(groups);
-    pending_.resolution = msg.resolution;
-    pending_.blocks.clear();
+    view.pending.full = std::move(groups);
+    view.pending.resolution = msg.resolution;
+    view.pending.blocks.clear();
   } else {
-    pending_.blocks.insert(pending_.blocks.end(), blocks.begin(), blocks.end());
+    view.pending.blocks.insert(view.pending.blocks.end(), blocks.begin(), blocks.end());
   }
 }
 
@@ -546,16 +650,18 @@ void RendererNode::onSyncRetry() {
   std::lock_guard<std::mutex> lock(stream_mutex_);
   // Requests and FULL messages get lost, and a voxelizer that just started
   // may not know us yet. It ignores requests a FULL message answers already.
-  if (listening_ && sync_.session && !sync_.synced) {
-    requestFullSync();
+  for (View& view : views_) {
+    if (view.listening && view.sync.session && !view.sync.synced) {
+      requestFullSync(view);
+    }
   }
 }
 
-void RendererNode::requestFullSync() {
+void RendererNode::requestFullSync(View& view) {
   msg::FullSyncRequest request;
-  request.session = *sync_.session;
-  request.since = sync_.since;
-  request_pub_->publish(request);
+  request.session = *view.sync.session;
+  request.since = view.sync.since;
+  view.request_pub->publish(request);
 }
 
 void RendererNode::onRobotDescription(const std::string& urdf_xml) {
@@ -565,7 +671,7 @@ void RendererNode::onRobotDescription(const std::string& urdf_xml) {
     return;
   }
   try {
-    robot_->load(urdf_xml, renderer_.get());
+    robot_->load(urdf_xml);
     loaded_urdf_ = urdf_xml;
   } catch (const std::exception& e) {
     RCLCPP_ERROR(get_logger(), "Ignoring robot description: %s", e.what());
@@ -598,6 +704,9 @@ void RendererNode::applyControls() {
   if (controls.enabled) {
     setEnabled(*controls.enabled);
   }
+  if (controls.mode) {
+    setMode(*controls.mode);
+  }
   if (controls.camera_pose) {
     camera_pose_ = std::move(controls.camera_pose);
   }
@@ -613,8 +722,10 @@ void RendererNode::applyControls() {
   if (controls.marching_cubes) {
     setMarchingCubes(*controls.marching_cubes);
   }
-  if (controls.voxels_visible) {
-    setVoxelsVisible(*controls.voxels_visible);
+  for (size_t index = 0; index < views_.size(); ++index) {
+    if (controls.voxels_visible[index]) {
+      setVoxelsVisible(views_[index], *controls.voxels_visible[index]);
+    }
   }
   if (controls.background_color) {
     setBackgroundColor(*controls.background_color);
@@ -630,64 +741,65 @@ void RendererNode::applyControls() {
   setColormap(colormap);
 }
 
-void RendererNode::flushVoxels() {
+void RendererNode::flushVoxels(View& view) {
   PendingVoxels pending;
   {
     std::lock_guard<std::mutex> lock(stream_mutex_);
-    std::swap(pending, pending_);
+    std::swap(pending, view.pending);
   }
   if (pending.full) {
-    if (pending.resolution != resolution_) {
+    if (pending.resolution != view.resolution) {
       // The tesselator gets the new voxel size once the renderer dropped
       // every chunk.
-      replaceTesselated({ });
-      resolution_ = pending.resolution;
-      configureTesselator();
+      replaceTesselated(view, { });
+      view.resolution = pending.resolution;
+      configureTesselator(view);
     }
-    map_.replace(std::move(*pending.full));
-    if (voxels_visible_) {
-      replaceTesselated(map_.groups());
+    view.map.replace(std::move(*pending.full));
+    if (view.voxels_visible) {
+      replaceTesselated(view, view.map.groups());
     }
   }
   if (!pending.blocks.empty()) {
-    map_.apply(pending.blocks);
-    if (voxels_visible_) {
-      tesselate(pending.blocks);
+    view.map.apply(pending.blocks);
+    if (view.voxels_visible) {
+      tesselate(view, pending.blocks);
     }
   }
 }
 
-void RendererNode::tesselate(const std::vector<WireBlock>& blocks) {
+void RendererNode::tesselate(View& view, const std::vector<WireBlock>& blocks) {
   if (blocks.empty()) {
     return;
   }
   checkStatus(
     rr::r3v_cpu_tesselator_update_input_geometry(
-      tesselator_.get(), reinterpret_cast<const rr::R3vPointI*>(blocks.data()), blocks.size()),
+      view.tesselator.get(), reinterpret_cast<const rr::R3vPointI*>(blocks.data()),
+      blocks.size()),
     "tesselating voxels");
-  uploadGeometryDelta();
+  uploadGeometryDelta(view);
 }
 
-void RendererNode::replaceTesselated(const std::vector<WireGroup>& groups) {
+void RendererNode::replaceTesselated(View& view, const std::vector<WireGroup>& groups) {
   // Chunks left without voxels come out empty, which the renderer drops.
   checkStatus(
     rr::r3v_cpu_tesselator_replace_input_geometry(
-      tesselator_.get(), reinterpret_cast<const rr::R3vVoxelGroup*>(groups.data()),
+      view.tesselator.get(), reinterpret_cast<const rr::R3vVoxelGroup*>(groups.data()),
       groups.size()),
     "tesselating voxels");
-  uploadGeometryDelta();
+  uploadGeometryDelta(view);
 }
 
-void RendererNode::uploadGeometryDelta() {
+void RendererNode::uploadGeometryDelta(View& view) {
   rr::R3vGeometryDelta* delta = nullptr;
   // No camera state: every changed chunk, not only the ones in view.
   checkStatus(
-    rr::r3v_cpu_tesselator_get_output_geometry_delta(tesselator_.get(), nullptr, &delta),
+    rr::r3v_cpu_tesselator_get_output_geometry_delta(view.tesselator.get(), nullptr, &delta),
     "tesselating voxels");
   if (delta != nullptr) {
     // Takes ownership of delta, also on failure.
     checkStatus(
-      rr::r3v_wgpu_renderer_update_geometry(renderer_.get(), delta), "uploading voxels");
+      rr::r3v_wgpu_renderer_update_geometry(view.renderer.get(), delta), "uploading voxels");
   }
 }
 
@@ -696,33 +808,36 @@ void RendererNode::setEnabled(bool enabled) {
     return;
   }
   enabled_ = enabled;
-  if (enabled) {
-    // The voxel stream brings the whole map again.
-    subscribeInputs();
-  } else {
-    unsubscribeInputs();
-    map_.clear();
-    replaceTesselated({ });
-    // Stale by the time the renderer is enabled again.
-    tf_buffer_->clear();
-    rendered_stamp_.reset();
-  }
+  updateViews();
   publishEnabled();
   RCLCPP_INFO(get_logger(), "%s the renderer", enabled ? "Enabled" : "Disabled");
 }
 
-void RendererNode::setVoxelsVisible(bool visible) {
-  if (visible == voxels_visible_) {
+void RendererNode::setMode(const std::string& mode) {
+  if (mode == mode_) {
     return;
   }
-  voxels_visible_ = visible;
-  // Point clouds keep building the map while it is hidden.
-  if (visible) {
-    replaceTesselated(map_.groups());
-  } else {
-    replaceTesselated({ });
+  mode_ = mode;
+  updateViews();
+  publishMode();
+  RCLCPP_INFO(get_logger(), "Mode %s", mode.c_str());
+}
+
+void RendererNode::setVoxelsVisible(View& view, bool visible) {
+  if (visible == view.voxels_visible) {
+    return;
   }
-  RCLCPP_INFO(get_logger(), "%s the voxel map", visible ? "Showing" : "Hiding");
+  view.voxels_visible = visible;
+  // Point clouds keep building the map while it is hidden. A view that is
+  // not active has no voxels to show or hide.
+  if (view.active) {
+    if (visible) {
+      replaceTesselated(view, view.map.groups());
+    } else {
+      replaceTesselated(view, { });
+    }
+  }
+  RCLCPP_INFO(get_logger(), "%s the %s", visible ? "Showing" : "Hiding", view.name);
 }
 
 void RendererNode::setMarchingCubes(bool enabled) {
@@ -730,11 +845,16 @@ void RendererNode::setMarchingCubes(bool enabled) {
     return;
   }
   marching_cubes_ = enabled;
-  checkStatus(
-    rr::r3v_cpu_tesselator_set_marching_cubes_enabled(tesselator_.get(), enabled),
-    "switching marching cubes");
-  // Every chunk with voxels is re-tesselated, new blocks or not.
-  uploadGeometryDelta();
+  for (View& view : views_) {
+    if (!view.tesselator) {
+      continue;  // configureTesselator() applies it
+    }
+    checkStatus(
+      rr::r3v_cpu_tesselator_set_marching_cubes_enabled(view.tesselator.get(), enabled),
+      "switching marching cubes");
+    // Every chunk with voxels is re-tesselated, new blocks or not.
+    uploadGeometryDelta(view);
+  }
   publishMarchingCubes();
   RCLCPP_INFO(get_logger(), "%s marching cubes", enabled ? "Enabled" : "Disabled");
 }
@@ -745,7 +865,7 @@ void RendererNode::setBackgroundColor(const rr::R3vVec3& color) {
     return;
   }
   background_color_ = color;
-  configureRenderer();
+  configureRenderers();
   publishBackgroundColor();
   RCLCPP_INFO(get_logger(), "Background color (%g, %g, %g)", color.x, color.y, color.z);
 }
@@ -761,7 +881,7 @@ void RendererNode::setColormap(const Colormap& colormap) {
   }
   colormap_ = colormap;
   // The color offset only moves the camera position the renderer gets.
-  configureRenderer();
+  configureRenderers();
   publishColormap();
   if (colormap_.by_height) {
     const std::string reference =
@@ -794,13 +914,19 @@ void RendererNode::updateHeightReference() {
     return;
   }
   height_reference_ = height;
-  configureRenderer();
+  configureRenderers();
 }
 
 void RendererNode::publishEnabled() {
   std_msgs::msg::Bool msg;
   msg.data = enabled_;
   enabled_pub_->publish(msg);
+}
+
+void RendererNode::publishMode() {
+  std_msgs::msg::String msg;
+  msg.data = mode_;
+  mode_pub_->publish(msg);
 }
 
 void RendererNode::publishMarchingCubes() {
@@ -873,25 +999,44 @@ void RendererNode::onRender() {
   try {
     const auto t0 = Clock::now();
     applyControls();
-    if (!enabled_) {
+    bool any_active = false;
+    for (View& view : views_) {
+      if (view.active) {
+        flushVoxels(view);
+        any_active = true;
+      }
+    }
+    if (!any_active) {
       return;
     }
-    flushVoxels();
     const auto t1 = Clock::now();
-    robot_->update(*tf_buffer_, fixed_frame_, renderer_.get());
+    robot_->update(*tf_buffer_, fixed_frame_);
     const auto t2 = Clock::now();
 
-    if (lazy_ && image_pub_.getNumSubscribers() == 0) {
-      // The frame the renderer holds gets stale; never publish it later.
-      rendered_stamp_.reset();
+    std::array<bool, 2> wanted{ };
+    bool any_wanted = false;
+    for (size_t index = 0; index < views_.size(); ++index) {
+      View& view = views_[index];
+      if (!view.active) {
+        continue;
+      }
+      if (lazy_ && view.image_pub.getNumSubscribers() == 0) {
+        // The frame the renderer holds gets stale; never publish it later.
+        view.rendered_stamp.reset();
+        continue;
+      }
+      wanted[index] = true;
+      any_wanted = true;
+    }
+    if (!any_wanted) {
       return;
     }
 
-    CameraView view;
+    CameraView camera;
     rr::R3vCameraState state;
-    if (!cameraView(view) ||
+    if (!cameraView(camera) ||
       !makeCameraState(
-        view, lens_, static_cast<double>(width_) / static_cast<double>(height_), state)) {
+        camera, lens_, static_cast<double>(width_) / static_cast<double>(height_), state)) {
       const std::string& frame =
         camera_pose_ ? camera_pose_->header.frame_id : camera_frame_;
       RCLCPP_WARN_THROTTLE(
@@ -911,19 +1056,25 @@ void RendererNode::onRender() {
     state.position.z -= color_offset * state.forward.z;
 
     const rclcpp::Time now = this->now();
-    checkStatus(
-      rr::r3v_wgpu_renderer_render(renderer_.get(), &state, frame_.data(), frame_.size()),
-      "rendering");
-    // Frames are read back one call late: frame_ is the one rendered at the
-    // previous call (none after configure).
-    const auto t3 = Clock::now();
-    if (rendered_stamp_) {
-      publish(frame_, *rendered_stamp_);
+    for (size_t index = 0; index < views_.size(); ++index) {
+      if (!wanted[index]) {
+        continue;
+      }
+      View& view = views_[index];
+      checkStatus(
+        rr::r3v_wgpu_renderer_render(
+          view.renderer.get(), &state, view.frame.data(), view.frame.size()),
+        "rendering");
+      // Frames are read back one call late: view.frame is the one rendered
+      // at the previous call (none after configure).
+      if (view.rendered_stamp) {
+        publish(view, *view.rendered_stamp);
+      }
+      view.rendered_stamp = now;
     }
-    rendered_stamp_ = now;
     RCLCPP_DEBUG(
-      get_logger(), "Frame: voxels %.1f ms, robot %.1f ms, render %.1f ms, publish %.1f ms",
-      ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, Clock::now()));
+      get_logger(), "Frame: voxels %.1f ms, robot %.1f ms, render and publish %.1f ms",
+      ms(t0, t1), ms(t1, t2), ms(t2, Clock::now()));
   } catch (const std::exception& e) {
     // Renderer errors leave it unusable; stop so a supervisor can restart us.
     RCLCPP_FATAL(get_logger(), "%s", e.what());
@@ -932,7 +1083,8 @@ void RendererNode::onRender() {
   }
 }
 
-void RendererNode::publish(const std::vector<uint8_t>& bgra, const rclcpp::Time& stamp) {
+void RendererNode::publish(View& view, const rclcpp::Time& stamp) {
+  const std::vector<uint8_t>& bgra = view.frame;
   sensor_msgs::msg::Image msg;
   msg.header.stamp = stamp;
   msg.header.frame_id = output_frame_id_.empty() ? fixed_frame_ : output_frame_id_;
@@ -964,7 +1116,7 @@ void RendererNode::publish(const std::vector<uint8_t>& bgra, const rclcpp::Time&
       msg.data[i * 3 + 2] = bgra[i * 4 + (rgb ? 0 : 2)];
     }
   }
-  image_pub_.publish(msg);
+  view.image_pub.publish(msg);
 }
 
 }  // namespace r3v_ros

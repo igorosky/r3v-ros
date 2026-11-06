@@ -7,6 +7,9 @@ The voxelizer publishes the map on `voxel_stream.topic` (`/r3v/voxels`) as
 order (keep last `voxel_stream.depth`, volatile). Changes and the whole map go
 on the same topic, so a renderer never has to line the two up.
 
+A second stream on `voxel_stream.downsampled_topic` carries a coarser copy of
+the map, see [Downsampled stream](#downsampled-stream). Both work the same way.
+
 ## Messages
 
 Every message carries:
@@ -22,7 +25,7 @@ There are two kinds:
 | Kind | Content | When |
 |---|---|---|
 | `DELTA` | The 4x4x2 voxel blocks (r3v-voxelizer `PointI`, 16 bytes) changed since the previous message. Every block carries its whole occupancy mask. | At most `voxel_stream.rate` messages a second |
-| `FULL` | The whole map as 64x64x64 voxel groups (r3v-voxelizer `VoxelGroup`, 32784 bytes), as `get_all_points_compressed` returns them and the tesselator's `replace_input_geometry` takes them. Replaces whatever a renderer holds. | After the map was cleared (also by a settings change: an empty map at the new resolution), when the voxelizer gets a subscriber while it had none, and when a renderer asks for one |
+| `FULL` | The whole map as 64x64x64 voxel groups (r3v-voxelizer `VoxelGroup`, 32784 bytes), as `get_all_points_compressed` returns them and the tesselator's `replace_input_geometry` takes them. Replaces whatever a renderer holds. | After the map was cleared (also by a change of the resolution, a threshold or `max_value`: an empty map at the new resolution), when the stream gets a subscriber while it had none, and when a renderer asks for one |
 
 `data` is little endian and compressed as the message's `compression` field
 says. The voxelizer sets it from `voxel_stream.compression` (zstd at level
@@ -55,3 +58,26 @@ Rules for subscribers:
 - A voxel stream subscriber has to be reliable.
 - A stream topic takes one voxelizer. Renderers take every other session for
   a restart and would synchronize again and again between two.
+
+## Downsampled stream
+
+The voxelizer also publishes the map downsampled (r3v-voxelizer's
+[downsampling](https://github.com/igorosky/r3v-voxelizer/blob/master/docs/parameters.md#downsampling))
+on `voxel_stream.downsampled_topic` (`/r3v/voxels_downsampled`). One
+downsampled voxel stands for a cube of `downsampling.voxel_size`^3 voxels and
+is there while at least `downsampling.threshold` of them are.
+
+- Same messages and synchronization as above, with its own `sequence` and
+  request topic (`~/downsampled/request_full_sync`). Both streams share the
+  session.
+- Coordinates are in downsampled voxels and `resolution` is the edge of a
+  downsampled voxel (`voxelizer.resolution * downsampling.voxel_size`), so a
+  renderer draws it like any map.
+- DELTA blocks come from `get_downsampled`, FULL groups from
+  `get_all_downsampled`.
+- The voxelizer only does the downsampling work while the stream has
+  subscribers.
+- A change of the downsampling settings sends a FULL message on this stream
+  only. Disabled, it carries an empty map.
+
+A client can follow either stream or both.

@@ -28,8 +28,9 @@ between clean builds.
 ## Code style and tests
 
 C++ code is checked with cpplint ([CPPLINT.cfg](../CPPLINT.cfg)) and
-uncrustify ([uncrustify.cfg](../uncrustify.cfg)), and the voxel stream payload
-has unit tests ([test](../test), no GPU needed). All of them run as tests:
+uncrustify ([uncrustify.cfg](../uncrustify.cfg)). The voxel stream payload, the
+voxel map and the downsampled output of r3v-voxelizer have unit tests
+([test](../test), no GPU needed). All of them run as tests:
 
 ```bash
 colcon test --packages-select r3v_ros && colcon test-result --verbose

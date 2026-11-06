@@ -61,7 +61,11 @@ VoxelizerNode::VoxelizerNode(const rclcpp::NodeOptions& options)
   RCLCPP_INFO(
     get_logger(), "Voxelizing %zu point clouds in '%s' (%s backend), publishing to '%s' at "
     "%.1f Hz, session %016" PRIx64, cloud_configs_.size(), fixed_frame_.c_str(),
-    voxelizer_backend_.c_str(), stream_pub_->get_topic_name(), stream_rate_, session_);
+    voxelizer_backend_.c_str(), full_.pub->get_topic_name(), stream_rate_, session_);
+  RCLCPP_INFO(
+    get_logger(), "Downsampled voxel map on '%s': %s, voxel size %" PRIu32 ", threshold %"
+    PRIu32, downsampled_.pub->get_topic_name(), downsampling_.enabled ? "enabled" : "disabled",
+    downsampling_.voxel_size, downsampling_.threshold);
 }
 
 void VoxelizerNode::declareParameters() {
@@ -73,6 +77,8 @@ void VoxelizerNode::declareParameters() {
   require(tf_timeout_ >= 0.0, "tf_timeout must not be negative");
 
   stream_topic_ = declare_parameter<std::string>("voxel_stream.topic", "/r3v/voxels");
+  downsampled_topic_ = declare_parameter<std::string>(
+    "voxel_stream.downsampled_topic", "/r3v/voxels_downsampled");
   const int64_t depth = declare_parameter<int64_t>("voxel_stream.depth", 100);
   stream_rate_ = declare_parameter<double>("voxel_stream.rate", 15.0);
   const std::string compression =
@@ -80,6 +86,10 @@ void VoxelizerNode::declareParameters() {
   const int64_t level = declare_parameter<int64_t>("voxel_stream.compression_level", 1);
   heartbeat_period_ = declare_parameter<double>("voxel_stream.heartbeat_period", 1.0);
   require(!stream_topic_.empty(), "voxel_stream.topic must not be empty");
+  require(!downsampled_topic_.empty(), "voxel_stream.downsampled_topic must not be empty");
+  require(
+    downsampled_topic_ != stream_topic_,
+    "voxel_stream.downsampled_topic must differ from voxel_stream.topic");
   require(depth >= 1 && depth <= 100000, "voxel_stream.depth must be between 1 and 100000");
   require(stream_rate_ > 0.0, "voxel_stream.rate must be positive");
   require(
@@ -118,6 +128,15 @@ void VoxelizerNode::declareParameters() {
     voxelizer_backend_ == "wgpu",
     "voxelizer.backend must be single_threaded, multi_threaded or wgpu");
 
+  downsampling_.enabled = declare_parameter<bool>("downsampling.enabled", true);
+  downsampling_.voxel_size = declareU32(*this, "downsampling.voxel_size", 4);
+  downsampling_.threshold = declareU32(*this, "downsampling.threshold", 1);
+  require(
+    validDownsampling(downsampling_.voxel_size, downsampling_.threshold),
+    "downsampling.voxel_size must be a power of two from 2 to " +
+    std::to_string(kMaxDownsampledVoxelSize) +
+    " and downsampling.threshold between 1 and voxel_size^3");
+
   const auto names = declare_parameter<std::vector<std::string>>(
     "point_clouds.names", std::vector<std::string>{ });
   std::set<std::string> seen;
@@ -151,7 +170,7 @@ void VoxelizerNode::declareParameters() {
       prefix + "needs 0 <= min_range < max_range");
     require(config.decimation >= 1, prefix + "decimation must be at least 1");
     cloud_configs_.push_back(std::move(config));
-    settings_.multipliers.push_back(multipliers);
+    cloud_multipliers_.push_back(multipliers);
   }
 }
 
@@ -182,7 +201,13 @@ VoxelizerPtr VoxelizerNode::makeVoxelizer() const {
             (voxelizer_backend_ == "wgpu" ?
             " (no GPU adapter able to run compute shaders, or wgpu_bucket_count too big)" : ""));
   }
-  return VoxelizerPtr(voxelizer);
+  VoxelizerPtr owned(voxelizer);
+  if (downsampling_.enabled &&
+    !rv::set_downsampling_params(
+      owned.get(), static_cast<uint8_t>(downsampling_.voxel_size), downsampling_.threshold)) {
+    throw std::runtime_error("the voxelizer refused the downsampling settings");
+  }
+  return owned;
 }
 
 void VoxelizerNode::createInterfaces() {
@@ -220,23 +245,33 @@ void VoxelizerNode::createInterfaces() {
       std::lock_guard<std::mutex> lock(controls_mutex_);
       controls_.clear_voxels = true;
     }, control_options);
-  sync_request_sub_ = create_subscription<msg::FullSyncRequest>(
-    "~/request_full_sync", rclcpp::QoS(10),
-    [this](msg::FullSyncRequest::ConstSharedPtr msg) {
-      std::lock_guard<std::mutex> lock(controls_mutex_);
-      controls_.sync_requests.push_back(*msg);
-    }, control_options);
   createSettingInterfaces(control_options);
 
-  rclcpp::PublisherOptions stream_options;
-  // Straight to renderers in the same process, as the combined launch file
-  // runs them; others get it through the middleware as usual.
-  stream_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Enable;
-  stream_pub_ = create_publisher<VoxelMapUpdate>(
-    stream_topic_, voxelStreamQos(stream_depth_), stream_options);
-  last_publish_ = Clock::now();
+  createStream(
+    full_, stream_topic_, "~/request_full_sync", &Controls::sync_requests, control_options);
+  createStream(
+    downsampled_, downsampled_topic_, "~/downsampled/request_full_sync",
+    &Controls::downsampled_sync_requests, control_options);
   tick_timer_ = create_wall_timer(
     std::chrono::duration<double>(1.0 / stream_rate_), [this]() { onTick(); }, voxel_group_);
+}
+
+void VoxelizerNode::createStream(
+  Stream& stream, const std::string& topic, const std::string& request_topic,
+  std::vector<msg::FullSyncRequest> Controls::* requests,
+  const rclcpp::SubscriptionOptions& control_options) {
+  stream.request_sub = create_subscription<msg::FullSyncRequest>(
+    request_topic, rclcpp::QoS(10),
+    [this, requests](msg::FullSyncRequest::ConstSharedPtr msg) {
+      std::lock_guard<std::mutex> lock(controls_mutex_);
+      (controls_.*requests).push_back(*msg);
+    }, control_options);
+  rclcpp::PublisherOptions options;
+  // Straight to renderers in the same process, as the combined launch file
+  // runs them; others get it through the middleware as usual.
+  options.use_intra_process_comm = rclcpp::IntraProcessSetting::Enable;
+  stream.pub = create_publisher<VoxelMapUpdate>(topic, voxelStreamQos(stream_depth_), options);
+  stream.last_publish = Clock::now();
 }
 
 void VoxelizerNode::createSettingInterfaces(const rclcpp::SubscriptionOptions& options) {
@@ -279,6 +314,18 @@ void VoxelizerNode::createSettingInterfaces(const rclcpp::SubscriptionOptions& o
   max_value_sub_ = u32_setter(
     "~/set_max_value",
     [](Controls& controls, uint32_t value) { controls.max_value = value; });
+  downsampling_enabled_sub_ = create_subscription<std_msgs::msg::Bool>(
+    "~/downsampling/set_enabled", rclcpp::QoS(10),
+    [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+      std::lock_guard<std::mutex> lock(controls_mutex_);
+      controls_.downsampling_enabled = msg->data;
+    }, options);
+  downsampled_voxel_size_sub_ = u32_setter(
+    "~/downsampling/set_voxel_size",
+    [](Controls& controls, uint32_t value) { controls.downsampled_voxel_size = value; });
+  downsampled_threshold_sub_ = u32_setter(
+    "~/downsampling/set_threshold",
+    [](Controls& controls, uint32_t value) { controls.downsampled_threshold = value; });
 
   const rclcpp::QoS state_qos = rclcpp::QoS(1).reliable().transient_local();
   resolution_pub_ = create_publisher<std_msgs::msg::Float64>("~/get_resolution", state_qos);
@@ -287,6 +334,12 @@ void VoxelizerNode::createSettingInterfaces(const rclcpp::SubscriptionOptions& o
   construct_threshold_pub_ =
     create_publisher<std_msgs::msg::UInt32>("~/get_construct_threshold", state_qos);
   max_value_pub_ = create_publisher<std_msgs::msg::UInt32>("~/get_max_value", state_qos);
+  downsampling_enabled_pub_ =
+    create_publisher<std_msgs::msg::Bool>("~/downsampling/get_enabled", state_qos);
+  downsampled_voxel_size_pub_ =
+    create_publisher<std_msgs::msg::UInt32>("~/downsampling/get_voxel_size", state_qos);
+  downsampled_threshold_pub_ =
+    create_publisher<std_msgs::msg::UInt32>("~/downsampling/get_threshold", state_qos);
 
   for (size_t index = 0; index < cloud_configs_.size(); ++index) {
     const std::string& name = cloud_configs_[index].name;
@@ -378,48 +431,33 @@ void VoxelizerNode::onCloud(size_t index, const sensor_msgs::msg::PointCloud2& c
     static_cast<float>(origin.z()), 0.0f };
   // Clouds share the voxelizer, each with its own multipliers. The voxel
   // group runs one callback at a time, so nothing runs in between.
-  rv::set_multipliers(voxelizer_.get(), settings_.multipliers[index]);
+  rv::set_multipliers(voxelizer_.get(), cloud_multipliers_[index]);
   const OwnedUpdate update(
     rv::add_points(voxelizer_.get(), sensor_pos, points_.data(), points_.size()));
   // Blocks carry their whole occupancy mask, so the last one wins.
   for (size_t i = 0; i < update->len; ++i) {
     const rv::PointI& block = update->data[i];
-    pending_[VoxelKey{ block.x, block.y, block.z }] = block.i;
+    full_.pending[VoxelKey{ block.x, block.y, block.z }] = block.i;
   }
 }
 
 void VoxelizerNode::onTick() {
   try {
     applyControls();
-    if (!voxelizer_) {
-      try {
-        voxelizer_ = makeVoxelizer();
-      } catch (const std::exception& e) {
-        RCLCPP_ERROR_THROTTLE(
-          get_logger(), *get_clock(), 5000, "%s; point clouds are dropped", e.what());
-      }
-    }
-    if (!hasSubscribers()) {
-      // Nobody to keep in sync. Whoever subscribes next starts from the
-      // whole map, without having to ask for it.
-      pending_.clear();
-      full_pending_ = true;
-      return;
-    }
-    if (full_pending_) {
-      publishFull();
-    } else if (!pending_.empty()) {
-      publishDelta();
-    } else if (Clock::now() - last_publish_ >= std::chrono::duration<double>(heartbeat_period_)) {
-      // Renderers that just subscribed learn the sequence to ask for a FULL
-      // message from, and a restart of this node.
-      publishUpdate(VoxelMapUpdate::DELTA, nullptr, 0);
-    }
   } catch (const std::exception& e) {
-    // Only compressing can fail; the blocks stay pending for the next tick.
-    RCLCPP_ERROR_THROTTLE(
-      get_logger(), *get_clock(), 5000, "Publishing the voxel stream failed: %s", e.what());
+    RCLCPP_ERROR(get_logger(), "Applying runtime settings failed: %s", e.what());
   }
+  if (!voxelizer_) {
+    try {
+      voxelizer_ = makeVoxelizer();
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 5000, "%s; point clouds are dropped", e.what());
+    }
+  }
+  publishNext(full_, settings_.resolution, rv::get_all_points_compressed);
+  collectDownsampled();
+  publishNext(downsampled_, downsampledResolution(), rv::get_all_downsampled);
 }
 
 void VoxelizerNode::applyControls() {
@@ -434,77 +472,158 @@ void VoxelizerNode::applyControls() {
   settings.construct_threshold =
     controls.construct_threshold.value_or(settings.construct_threshold);
   settings.max_value = controls.max_value.value_or(settings.max_value);
-  for (const auto& [index, change] : controls.multipliers) {
-    rv::Multipliers& m = settings.multipliers[index];
-    m.intensity = change.intensity.value_or(m.intensity);
-    m.hit = change.hit.value_or(m.hit);
-    m.target = change.target.value_or(m.target);
-  }
   // A change clears the map too, so with a clear arriving together the map
   // is cleared once.
   if (!setVoxelizerSettings(settings) && controls.clear_voxels) {
     clearVoxels();
   }
 
-  for (const auto& request : controls.sync_requests) {
+  std::vector<rv::Multipliers> multipliers = cloud_multipliers_;
+  for (const auto& [index, change] : controls.multipliers) {
+    rv::Multipliers& m = multipliers[index];
+    m.intensity = change.intensity.value_or(m.intensity);
+    m.hit = change.hit.value_or(m.hit);
+    m.target = change.target.value_or(m.target);
+  }
+  setMultipliers(multipliers);
+
+  DownsamplingSettings downsampling = downsampling_;
+  downsampling.enabled = controls.downsampling_enabled.value_or(downsampling.enabled);
+  downsampling.voxel_size = controls.downsampled_voxel_size.value_or(downsampling.voxel_size);
+  downsampling.threshold = controls.downsampled_threshold.value_or(downsampling.threshold);
+  setDownsampling(downsampling);
+
+  answerSyncRequests(full_, controls.sync_requests);
+  answerSyncRequests(downsampled_, controls.downsampled_sync_requests);
+}
+
+void VoxelizerNode::answerSyncRequests(
+  Stream& stream, const std::vector<msg::FullSyncRequest>& requests) {
+  for (const auto& request : requests) {
     // A request about another session (of a previous run) is answered by
     // the stream itself: the renderer sees the new session and asks again.
     if (request.session != session_) {
       continue;
     }
     // A FULL message from `since` on is already on its way to the renderer.
-    if (last_full_ && *last_full_ >= request.since) {
+    if (stream.last_full && *stream.last_full >= request.since) {
       continue;
     }
-    full_pending_ = true;
+    stream.full_pending = true;
+  }
+}
+
+void VoxelizerNode::restartStreams() {
+  for (Stream* stream : { &full_, &downsampled_ }) {
+    stream->pending.clear();
+    stream->full_pending = true;
   }
 }
 
 void VoxelizerNode::clearVoxels() {
+  // Keeps the downsampling settings, drops the downsampled state. NULL (no
+  // voxelizer, so no voxels) is ignored.
+  rv::clear_voxelizer(voxelizer_.get());
+  downsampled_tracked_ = false;
+  // Tells renderers the map is empty.
+  restartStreams();
+  RCLCPP_INFO(get_logger(), "Cleared the voxel map");
+}
+
+void VoxelizerNode::rebuildVoxelizer() {
   // The old one goes first, a wgpu one holds GPU memory.
   voxelizer_.reset();
-  pending_.clear();
+  downsampled_tracked_ = false;
   // Tells renderers the map is empty, also at a new resolution.
-  full_pending_ = true;
+  restartStreams();
   try {
     voxelizer_ = makeVoxelizer();
   } catch (const std::exception& e) {
     RCLCPP_ERROR(get_logger(), "%s; trying again", e.what());
   }
-  RCLCPP_INFO(get_logger(), "Cleared the voxel map");
 }
 
 bool VoxelizerNode::setVoxelizerSettings(const VoxelizerSettings& settings) {
   const VoxelizerSettings& old = settings_;
-  const bool same_multipliers = std::equal(
-    settings.multipliers.begin(), settings.multipliers.end(), old.multipliers.begin(),
-    old.multipliers.end(), sameMultipliers);
   if (settings.resolution == old.resolution &&
     settings.destroy_threshold == old.destroy_threshold &&
     settings.construct_threshold == old.construct_threshold &&
-    settings.max_value == old.max_value && same_multipliers) {
+    settings.max_value == old.max_value) {
     return false;
   }
   settings_ = settings;
-  clearVoxels();
+  rebuildVoxelizer();
   publishSettings();
   RCLCPP_INFO(
     get_logger(), "Voxelizer: resolution %g m, destroy threshold %u, construct threshold %u, "
-    "max value %u", settings.resolution, settings.destroy_threshold,
+    "max value %u; cleared the voxel map", settings.resolution, settings.destroy_threshold,
     settings.construct_threshold, settings.max_value);
+  return true;
+}
+
+void VoxelizerNode::setMultipliers(const std::vector<rv::Multipliers>& multipliers) {
+  bool changed = false;
   for (size_t index = 0; index < cloud_configs_.size(); ++index) {
-    const rv::Multipliers& m = settings.multipliers[index];
+    const rv::Multipliers& m = multipliers[index];
+    if (sameMultipliers(m, cloud_multipliers_[index])) {
+      continue;
+    }
+    changed = true;
     RCLCPP_INFO(
       get_logger(), "Point cloud '%s': intensity multiplier %g, hit multiplier %u, "
       "target multiplier %u", cloud_configs_[index].name.c_str(),
       static_cast<double>(m.intensity), m.hit, m.target);
   }
-  return true;
+  if (!changed) {
+    return;
+  }
+  // onCloud() hands each cloud's own to the voxelizer before its points.
+  // Voxels keep what they got so far.
+  cloud_multipliers_ = multipliers;
+  publishSettings();
+}
+
+void VoxelizerNode::setDownsampling(const DownsamplingSettings& downsampling) {
+  const DownsamplingSettings& old = downsampling_;
+  if (downsampling.enabled == old.enabled && downsampling.voxel_size == old.voxel_size &&
+    downsampling.threshold == old.threshold) {
+    return;
+  }
+  if (!validDownsampling(downsampling.voxel_size, downsampling.threshold)) {
+    RCLCPP_WARN(
+      get_logger(), "Ignoring downsampling voxel size %" PRIu32 " with threshold %" PRIu32
+      ": the size must be a power of two from 2 to %" PRIu32 " and the threshold between 1 "
+      "and size^3", downsampling.voxel_size, downsampling.threshold, kMaxDownsampledVoxelSize);
+    return;
+  }
+  // Without a voxelizer makeVoxelizer() applies them.
+  if (voxelizer_) {
+    if (!downsampling.enabled) {
+      rv::disable_downsampling(voxelizer_.get());
+    } else if (!rv::set_downsampling_params(
+        voxelizer_.get(), static_cast<uint8_t>(downsampling.voxel_size),
+        downsampling.threshold)) {
+      RCLCPP_ERROR(get_logger(), "The voxelizer refused the downsampling settings");
+      return;
+    }
+  }
+  downsampling_ = downsampling;
+  downsampled_tracked_ = false;
+  // The downsampled state is dropped: followers get the whole downsampled
+  // map at its new size, an empty one when disabled. The voxel map stays.
+  downsampled_.pending.clear();
+  downsampled_.full_pending = true;
+  publishSettings();
+  RCLCPP_INFO(
+    get_logger(), "Downsampling %s: voxel size %" PRIu32 " (%g m), threshold %" PRIu32,
+    downsampling.enabled ? "enabled" : "disabled", downsampling.voxel_size,
+    downsampledResolution(), downsampling.threshold);
 }
 
 void VoxelizerNode::publishSettings() {
   std_msgs::msg::Float64 f64;
   std_msgs::msg::UInt32 u32;
+  std_msgs::msg::Bool flag;
   f64.data = settings_.resolution;
   resolution_pub_->publish(f64);
   u32.data = settings_.destroy_threshold;
@@ -513,8 +632,14 @@ void VoxelizerNode::publishSettings() {
   construct_threshold_pub_->publish(u32);
   u32.data = settings_.max_value;
   max_value_pub_->publish(u32);
+  flag.data = downsampling_.enabled;
+  downsampling_enabled_pub_->publish(flag);
+  u32.data = downsampling_.voxel_size;
+  downsampled_voxel_size_pub_->publish(u32);
+  u32.data = downsampling_.threshold;
+  downsampled_threshold_pub_->publish(u32);
   for (size_t index = 0; index < multiplier_topics_.size(); ++index) {
-    const rv::Multipliers& m = settings_.multipliers[index];
+    const rv::Multipliers& m = cloud_multipliers_[index];
     const MultiplierTopics& topics = multiplier_topics_[index];
     f64.data = m.intensity;
     topics.intensity_pub->publish(f64);
@@ -525,50 +650,106 @@ void VoxelizerNode::publishSettings() {
   }
 }
 
-bool VoxelizerNode::hasSubscribers() const {
-  return stream_pub_->get_subscription_count() > 0 ||
-         stream_pub_->get_intra_process_subscription_count() > 0;
+void VoxelizerNode::collectDownsampled() {
+  if (!hasSubscribers(downsampled_)) {
+    if (downsampled_tracked_) {
+      // Spares add_points the downsampling work while nobody follows. The
+      // settings stay, get_downsampled builds the state again.
+      rv::clear_downsampled(voxelizer_.get());
+      downsampled_tracked_ = false;
+    }
+    return;
+  }
+  if (!voxelizer_) {
+    return;
+  }
+  // Right after the state got dropped this builds it and returns every
+  // present block, which the FULL message pending then holds anyway.
+  // Empty while downsampling is disabled.
+  const OwnedUpdate update(rv::get_downsampled(voxelizer_.get()));
+  downsampled_tracked_ = downsampling_.enabled;
+  for (size_t i = 0; i < update->len; ++i) {
+    const rv::PointI& block = update->data[i];
+    downsampled_.pending[VoxelKey{ block.x, block.y, block.z }] = block.i;
+  }
 }
 
-void VoxelizerNode::publishFull() {
+bool VoxelizerNode::hasSubscribers(const Stream& stream) const {
+  return stream.pub->get_subscription_count() > 0 ||
+         stream.pub->get_intra_process_subscription_count() > 0;
+}
+
+void VoxelizerNode::publishNext(Stream& stream, double resolution, GetAllGroups get_all) {
+  try {
+    if (!hasSubscribers(stream)) {
+      // Nobody to keep in sync. Whoever subscribes next starts from the
+      // whole map, without having to ask for it.
+      stream.pending.clear();
+      stream.full_pending = true;
+      return;
+    }
+    if (stream.full_pending) {
+      publishFull(stream, resolution, get_all);
+    } else if (!stream.pending.empty()) {
+      publishDelta(stream, resolution);
+    } else if (Clock::now() - stream.last_publish >=
+      std::chrono::duration<double>(heartbeat_period_)) {
+      // Renderers that just subscribed learn the sequence to ask for a FULL
+      // message from, and a restart of this node.
+      publishUpdate(stream, VoxelMapUpdate::DELTA, nullptr, 0, resolution);
+    }
+  } catch (const std::exception& e) {
+    // Only compressing can fail; the blocks stay pending for the next tick.
+    RCLCPP_ERROR_THROTTLE(
+      get_logger(), *get_clock(), 5000, "Publishing the %s failed: %s", stream.what, e.what());
+  }
+}
+
+void VoxelizerNode::publishFull(Stream& stream, double resolution, GetAllGroups get_all) {
   // Empty when making the voxelizer failed, as the map is.
-  const OwnedVoxelGroups groups(rv::get_all_points_compressed(voxelizer_.get()));
-  const uint64_t sequence = sequence_;
-  const size_t size =
-    publishUpdate(VoxelMapUpdate::FULL, groups->data, groups->len * sizeof(WireGroup));
+  const OwnedVoxelGroups groups(get_all(voxelizer_.get()));
+  const uint64_t sequence = stream.sequence;
+  const size_t size = publishUpdate(
+    stream, VoxelMapUpdate::FULL, groups->data, groups->len * sizeof(WireGroup), resolution);
   // It holds every block changed so far.
-  last_full_ = sequence;
-  pending_.clear();
-  full_pending_ = false;
+  stream.last_full = sequence;
+  stream.pending.clear();
+  stream.full_pending = false;
   RCLCPP_INFO(
-    get_logger(), "Published the whole voxel map: %zu groups, %zu bytes (message %" PRIu64 ")",
-    static_cast<size_t>(groups->len), size, sequence);
+    get_logger(), "Published the whole %s: %zu groups at %g m, %zu bytes (message %" PRIu64
+    ")", stream.what, static_cast<size_t>(groups->len), resolution, size, sequence);
 }
 
-void VoxelizerNode::publishDelta() {
+void VoxelizerNode::publishDelta(Stream& stream, double resolution) {
   std::vector<WireBlock> blocks;
-  blocks.reserve(pending_.size());
-  for (const auto& [key, mask] : pending_) {
+  blocks.reserve(stream.pending.size());
+  for (const auto& [key, mask] : stream.pending) {
     blocks.push_back({ key.x, key.y, key.z, mask });
   }
-  publishUpdate(VoxelMapUpdate::DELTA, blocks.data(), blocks.size() * sizeof(WireBlock));
-  pending_.clear();
+  publishUpdate(
+    stream, VoxelMapUpdate::DELTA, blocks.data(), blocks.size() * sizeof(WireBlock), resolution);
+  stream.pending.clear();
 }
 
-size_t VoxelizerNode::publishUpdate(uint8_t kind, const void* data, size_t bytes) {
+size_t VoxelizerNode::publishUpdate(
+  Stream& stream, uint8_t kind, const void* data, size_t bytes, double resolution) {
   auto msg = std::make_unique<VoxelMapUpdate>();
   msg->data = encodePayload(data, bytes, compression_, compression_level_);
   msg->header.stamp = now();
   msg->header.frame_id = fixed_frame_;
   msg->session = session_;
-  msg->sequence = sequence_++;
+  msg->sequence = stream.sequence++;
   msg->kind = kind;
   msg->compression = compression_;
-  msg->resolution = settings_.resolution;
+  msg->resolution = resolution;
   const size_t size = msg->data.size();
-  stream_pub_->publish(std::move(msg));
-  last_publish_ = Clock::now();
+  stream.pub->publish(std::move(msg));
+  stream.last_publish = Clock::now();
   return size;
+}
+
+double VoxelizerNode::downsampledResolution() const {
+  return settings_.resolution * static_cast<double>(downsampling_.voxel_size);
 }
 
 }  // namespace r3v_ros

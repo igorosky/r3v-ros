@@ -1,6 +1,6 @@
-# One message of the voxel stream: a change of the voxel map built by
-# r3v_voxelizer_node, or the whole map. See docs/voxel-stream.md for the
-# protocol.
+# One message of a voxel stream: a change of the voxel map built by
+# r3v_voxelizer_node (or of its downsampled copy), or the whole map. See
+# docs/voxel-stream.md for the protocol.
 
 # Blocks that changed since the previous message of the session.
 uint8 DELTA=0
@@ -19,11 +19,13 @@ uint64 sequence
 uint8 kind
 # How data is compressed.
 uint8 compression
-# Voxel edge length the map is built with, in meters.
+# Edge length of the voxels in data, in meters. On the downsampled stream the
+# edge of a downsampled voxel (voxelizer resolution * downsampling voxel size).
 float64 resolution
 # Little endian, voxel coordinates in the renderer world (Y-up). DELTA:
 # blocks of 4x4x2 voxels, int32 x, y, z (origin) and uint32 mask (16 bytes
 # each). FULL: groups of 64x64x64 voxels, a 16 byte key block (voxel
 # coordinates shifted right by 6, mask 0) and 4096 uint64 page words (32784
-# bytes each), as r3v-voxelizer's get_all_points_compressed returns them.
+# bytes each), as r3v-voxelizer's get_all_points_compressed (or
+# get_all_downsampled) returns them.
 uint8[] data

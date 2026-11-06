@@ -138,6 +138,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_voxel_stream test/test_voxel_stream.cpp)
   target_compile_options(test_voxel_stream PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
   target_link_libraries(test_voxel_stream r3v_ros_common)
+  # Downsampled output of r3v-voxelizer (single_threaded, no GPU) through the
+  # stream helpers.
+  ament_add_gtest(test_downsampled_stream test/test_downsampled_stream.cpp)
+  target_compile_options(test_downsampled_stream PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
+  target_link_libraries(test_downsampled_stream r3v_ros_common r3v::voxelizer)
+  add_dependencies(test_downsampled_stream voxelizer_cargo)
 endif()
 
 ament_export_dependencies(rosidl_default_runtime)

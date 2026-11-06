@@ -59,6 +59,14 @@ struct VoxelKeyHash {
 // Whether zstd takes `level`.
 bool validCompressionLevel(int level);
 
+// Largest edge of a downsampled voxel, in voxels.
+constexpr uint32_t kMaxDownsampledVoxelSize = 128;
+
+// Whether r3v-voxelizer's set_downsampling_params takes these: `voxel_size`
+// a power of two from 2 to kMaxDownsampledVoxelSize, `threshold` from 1 to
+// voxel_size^3.
+bool validDownsampling(uint32_t voxel_size, uint32_t threshold);
+
 // The data of a VoxelMapUpdate holding `bytes` from `data`, compressed by
 // `compression` (a VoxelMapUpdate::COMPRESSION_* value) at zstd `level`.
 // Throws std::runtime_error when compressing fails.

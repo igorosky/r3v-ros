@@ -139,6 +139,11 @@ if(BUILD_TESTING)
   target_compile_options(test_downsampled_stream PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
   target_link_libraries(test_downsampled_stream r3v_ros_common r3v::voxelizer)
   add_dependencies(test_downsampled_stream voxelizer_cargo)
+  # The voxelizer node's streams (single_threaded backend, no GPU).
+  ament_add_gtest(test_voxelizer_node test/test_voxelizer_node.cpp TIMEOUT 120)
+  target_compile_options(test_voxelizer_node PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
+  ament_target_dependencies(test_voxelizer_node r3v_interfaces rclcpp)
+  target_link_libraries(test_voxelizer_node r3v_voxelizer_component)
 endif()
 
 ament_package()

@@ -37,6 +37,11 @@
       # none.
       compression: zstd
       compression_level: 1
+      # The same for the downsampled stream (downsampling below). Left out,
+      # it takes compression and compression_level. The r3v launch file sets
+      # zstd: whoever follows the downsampled stream is usually elsewhere.
+      # downsampled_compression: zstd
+      # downsampled_compression_level: 1
       # Seconds without a message after which an empty one goes out, so that
       # renderers notice a restart and can ask for the whole map.
       heartbeat_period: 1.0

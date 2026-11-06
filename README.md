@@ -114,7 +114,9 @@ ros2 launch r3v_ros renderer.launch.py config:=/path/to/r3v.yaml    # base stati
 `r3v.launch.py` loads both nodes into one `component_container_mt`, where the
 voxel stream goes from one to the other without the middleware (and
 uncompressed; `compression:=zstd` compresses it for renderers elsewhere
-following it too).
+following it too). The downsampled stream is zstd compressed there, as its
+followers are usually elsewhere (`downsampled_compression:=none` to change
+that).
 
 When split, the renderer needs the voxel stream, TF and `robot_description`
 from the robot, the voxelizer needs only the point clouds and TF. All launch

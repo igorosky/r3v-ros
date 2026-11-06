@@ -25,6 +25,11 @@ def generate_launch_description():
             'compression', default_value='none',
             description='voxel_stream.compression of the voxelizer: none (the stream stays '
                         'in the process) or zstd (renderers elsewhere follow it too)'),
+        DeclareLaunchArgument(
+            'downsampled_compression', default_value='zstd',
+            description='voxel_stream.downsampled_compression of the voxelizer, the same for '
+                        'the downsampled stream, which is usually followed from elsewhere '
+                        '(e.g. a browser)'),
         # The voxel stream goes from one node to the other within the
         # process, without the middleware.
         ComposableNodeContainer(
@@ -40,7 +45,12 @@ def generate_launch_description():
                     name='r3v_voxelizer',
                     namespace=namespace,
                     parameters=parameters + [
-                        {'voxel_stream.compression': LaunchConfiguration('compression')},
+                        {
+                            'voxel_stream.compression': LaunchConfiguration('compression'),
+                            'voxel_stream.downsampled_compression': LaunchConfiguration(
+                                'downsampled_compression'
+                            ),
+                        },
                     ],
                 ),
                 ComposableNode(

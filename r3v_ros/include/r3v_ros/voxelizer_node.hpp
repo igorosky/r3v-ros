@@ -73,6 +73,10 @@ private:
     // Masks of the blocks changed since the last message, the last one wins.
     std::unordered_map<VoxelKey, uint32_t, VoxelKeyHash> pending;
     bool full_pending = true;  // the next message is a FULL one
+    // How its data is compressed: a VoxelMapUpdate::COMPRESSION_* value and
+    // the zstd level.
+    uint8_t compression = 0;
+    int compression_level = 0;
     uint64_t sequence = 0;  // of the next message
     std::optional<uint64_t> last_full;  // sequence of the last FULL message
     Clock::time_point last_publish;
@@ -146,8 +150,6 @@ private:
   std::string downsampled_topic_;
   size_t stream_depth_;
   double stream_rate_;
-  uint8_t compression_;  // a VoxelMapUpdate::COMPRESSION_* value
-  int compression_level_;
   double heartbeat_period_;
 
   // Declared first so they outlive every callback using them.

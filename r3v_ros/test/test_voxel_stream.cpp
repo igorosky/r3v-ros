@@ -203,6 +203,18 @@ TEST(VoxelMap, ReplacesAndAppliesOnTop) {
   EXPECT_EQ(blocksOf(map.groups()), lastWins(second, lastWins(first)));
 }
 
+TEST(VoxelStream, ParsesCompressionNames) {
+  EXPECT_EQ(parseCompression("zstd"), VoxelMapUpdate::COMPRESSION_ZSTD);
+  EXPECT_EQ(parseCompression("none"), VoxelMapUpdate::COMPRESSION_NONE);
+  EXPECT_FALSE(parseCompression("").has_value());
+  EXPECT_FALSE(parseCompression("ZSTD").has_value());
+  for (const uint8_t compression :
+    { VoxelMapUpdate::COMPRESSION_NONE, VoxelMapUpdate::COMPRESSION_ZSTD }) {
+    EXPECT_EQ(parseCompression(compressionName(compression)), compression);
+  }
+  EXPECT_STREQ(compressionName(7), "unknown");
+}
+
 TEST(VoxelMap, MergesGroupsSharingAKey) {
   std::vector<WireGroup> groups(3);
   groups[0].key = { 2, -3, 0, 0 };

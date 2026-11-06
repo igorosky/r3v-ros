@@ -32,7 +32,10 @@ There are two kinds:
 `data` is little endian and compressed as the message's `compression` field
 says. The voxelizer sets it from `voxel_stream.compression` (zstd at level
 `voxel_stream.compression_level` by default; none within the combined launch
-file). Zero runs make up most of a FULL message, so it compresses to about the
+file), and on the downsampled stream from `voxel_stream.downsampled_compression`
+and `voxel_stream.downsampled_compression_level`, which default to the two
+before (the combined launch file sets zstd, whoever follows the downsampled
+stream is usually elsewhere, e.g. a browser). Zero runs make up most of a FULL message, so it compresses to about the
 size of its occupied pages.
 
 After `voxel_stream.heartbeat_period` without a message an empty DELTA goes

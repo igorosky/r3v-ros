@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -61,6 +62,14 @@ struct VoxelKeyHash {
 
 // Whether zstd takes `level`.
 bool validCompressionLevel(int level);
+
+// The VoxelMapUpdate::COMPRESSION_* value of a compression parameter (zstd
+// or none), nullopt for any other name.
+std::optional<uint8_t> parseCompression(const std::string& name);
+
+// Name of a VoxelMapUpdate::COMPRESSION_* value, as parseCompression() takes
+// it ("unknown" for any other value).
+const char * compressionName(uint8_t compression);
 
 // Largest edge of a downsampled voxel, in voxels.
 constexpr uint32_t kMaxDownsampledVoxelSize = 128;

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <random>
 #include <set>
 #include <stdexcept>
@@ -61,13 +62,15 @@ VoxelizerNode::VoxelizerNode(const rclcpp::NodeOptions& options)
   voxelizer_ = makeVoxelizer();
   createInterfaces();
   RCLCPP_INFO(
-    get_logger(), "Voxelizing %zu point clouds in '%s' (%s backend), publishing to '%s' at "
-    "%.1f Hz, session %016" PRIx64, cloud_configs_.size(), fixed_frame_.c_str(),
-    voxelizer_backend_.c_str(), full_.pub->get_topic_name(), stream_rate_, session_);
+    get_logger(), "Voxelizing %zu point clouds in '%s' (%s backend), publishing to '%s' (%s) "
+    "at %.1f Hz, session %016" PRIx64, cloud_configs_.size(), fixed_frame_.c_str(),
+    voxelizer_backend_.c_str(), full_.pub->get_topic_name(),
+    compressionName(full_.compression), stream_rate_, session_);
   RCLCPP_INFO(
-    get_logger(), "Downsampled voxel map on '%s': %s, voxel size %" PRIu32 ", threshold %"
-    PRIu32, downsampled_.pub->get_topic_name(), downsampling_.enabled ? "enabled" : "disabled",
-    downsampling_.voxel_size, downsampling_.threshold);
+    get_logger(), "Downsampled voxel map on '%s' (%s): %s, voxel size %" PRIu32 ", threshold %"
+    PRIu32, downsampled_.pub->get_topic_name(), compressionName(downsampled_.compression),
+    downsampling_.enabled ? "enabled" : "disabled", downsampling_.voxel_size,
+    downsampling_.threshold);
 }
 
 void VoxelizerNode::declareParameters() {
@@ -86,6 +89,11 @@ void VoxelizerNode::declareParameters() {
   const std::string compression =
     declare_parameter<std::string>("voxel_stream.compression", "zstd");
   const int64_t level = declare_parameter<int64_t>("voxel_stream.compression_level", 1);
+  // The downsampled stream compresses as the full one unless set apart.
+  const std::string downsampled_compression =
+    declare_parameter<std::string>("voxel_stream.downsampled_compression", compression);
+  const int64_t downsampled_level =
+    declare_parameter<int64_t>("voxel_stream.downsampled_compression_level", level);
   heartbeat_period_ = declare_parameter<double>("voxel_stream.heartbeat_period", 1.0);
   require(!stream_topic_.empty(), "voxel_stream.topic must not be empty");
   require(!downsampled_topic_.empty(), "voxel_stream.downsampled_topic must not be empty");
@@ -94,18 +102,27 @@ void VoxelizerNode::declareParameters() {
     "voxel_stream.downsampled_topic must differ from voxel_stream.topic");
   require(depth >= 1 && depth <= 100000, "voxel_stream.depth must be between 1 and 100000");
   require(stream_rate_ > 0.0, "voxel_stream.rate must be positive");
+  const std::optional<uint8_t> full_compression = parseCompression(compression);
+  const std::optional<uint8_t> downsampled_kind = parseCompression(downsampled_compression);
+  require(full_compression.has_value(), "voxel_stream.compression must be zstd or none");
   require(
-    compression == "zstd" || compression == "none",
-    "voxel_stream.compression must be zstd or none");
+    downsampled_kind.has_value(), "voxel_stream.downsampled_compression must be zstd or none");
+  const auto valid_level = [](int64_t value) {
+      return value >= std::numeric_limits<int>::min() &&
+             value <= std::numeric_limits<int>::max() &&
+             validCompressionLevel(static_cast<int>(value));
+    };
   require(
-    level >= std::numeric_limits<int>::min() && level <= std::numeric_limits<int>::max() &&
-    validCompressionLevel(static_cast<int>(level)),
-    "voxel_stream.compression_level is out of the range zstd takes");
+    valid_level(level), "voxel_stream.compression_level is out of the range zstd takes");
+  require(
+    valid_level(downsampled_level),
+    "voxel_stream.downsampled_compression_level is out of the range zstd takes");
   require(heartbeat_period_ > 0.0, "voxel_stream.heartbeat_period must be positive");
   stream_depth_ = static_cast<size_t>(depth);
-  compression_ = compression == "zstd" ?
-    VoxelMapUpdate::COMPRESSION_ZSTD : VoxelMapUpdate::COMPRESSION_NONE;
-  compression_level_ = static_cast<int>(level);
+  full_.compression = *full_compression;
+  full_.compression_level = static_cast<int>(level);
+  downsampled_.compression = *downsampled_kind;
+  downsampled_.compression_level = static_cast<int>(downsampled_level);
 
   settings_.resolution = declare_parameter<double>("voxelizer.resolution", 0.1);
   require(
@@ -736,13 +753,13 @@ void VoxelizerNode::publishDelta(Stream& stream, double resolution) {
 size_t VoxelizerNode::publishUpdate(
   Stream& stream, uint8_t kind, const void* data, size_t bytes, double resolution) {
   auto msg = std::make_unique<VoxelMapUpdate>();
-  msg->data = encodePayload(data, bytes, compression_, compression_level_);
+  msg->data = encodePayload(data, bytes, stream.compression, stream.compression_level);
   msg->header.stamp = now();
   msg->header.frame_id = fixed_frame_;
   msg->session = session_;
   msg->sequence = stream.sequence++;
   msg->kind = kind;
-  msg->compression = compression_;
+  msg->compression = stream.compression;
   msg->resolution = resolution;
   const size_t size = msg->data.size();
   stream.pub->publish(std::move(msg));

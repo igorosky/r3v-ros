@@ -131,18 +131,26 @@ const Triangles* RobotScene::geometryTriangles(
   return &cache_.emplace(key, std::move(out)).first->second;
 }
 
-void RobotScene::load(const std::string& urdf_xml, rr::R3vWgpuRenderer* renderer) {
+void RobotScene::addRenderer(rr::R3vWgpuRenderer* renderer) {
+  targets_.push_back({ renderer, { } });
+  upload(targets_.back());
+}
+
+void RobotScene::load(const std::string& urdf_xml) {
   urdf::Model model;
   if (!model.initString(urdf_xml)) {
     throw std::runtime_error("cannot parse robot description");
   }
 
-  for (auto& instance : instances_) {
-    if (instance.visible) {
-      checkStatus(
-        rr::r3v_wgpu_renderer_set_asset_visibility(renderer, instance.id, false),
-        "hiding a previous robot visual");
+  for (auto& target : targets_) {
+    for (const auto& drawn : target.drawn) {
+      if (drawn.visible) {
+        checkStatus(
+          rr::r3v_wgpu_renderer_set_asset_visibility(target.renderer, drawn.id, false),
+          "hiding a previous robot visual");
+      }
     }
+    target.drawn.clear();
   }
   instances_.clear();
   children_.clear();
@@ -167,33 +175,50 @@ void RobotScene::load(const std::string& urdf_xml, rr::R3vWgpuRenderer* renderer
       if (geometryTriangles(*visual->geometry, key) == nullptr) {
         continue;
       }
-      by_geometry[key].push_back({ link->name, toEigen(visual->origin), 0, false });
+      by_geometry[key].push_back({ link->name, toEigen(visual->origin), key });
     }
   }
-
   for (auto& [key, instances] : by_geometry) {
-    const Triangles& triangles = cache_.at(key);
-    MeshPtr mesh(rr::r3v_mesh_from_triangles(triangles.data(), triangles.size()));
-    if (!mesh) {
-      throw std::runtime_error("creating mesh '" + key + "' failed: " + lastRendererError());
+    for (auto& instance : instances) {
+      instances_.push_back(std::move(instance));
     }
-    std::vector<uint64_t> ids(instances.size());
-    checkStatus(
-      rr::r3v_wgpu_renderer_upload_asset(renderer, mesh.get(), ids.size(), ids.data()),
-      "uploading mesh '" + key + "'");
-    for (size_t i = 0; i < instances.size(); ++i) {
-      instances[i].id = ids[i];
-      checkStatus(
-        rr::r3v_wgpu_renderer_set_asset_visibility(renderer, ids[i], false),
-        "hiding a new robot visual");
-      instances_.push_back(std::move(instances[i]));
-    }
+  }
+  for (auto& target : targets_) {
+    upload(target);
   }
   RCLCPP_INFO(
     logger_, "Loaded robot '%s': %zu of %zu visuals, %zu distinct meshes",
     model.getName().c_str(), instances_.size(), visual_count, by_geometry.size());
   unknown_hidden_.clear();
   updateHidden();
+}
+
+void RobotScene::upload(Target& target) {
+  target.drawn.assign(instances_.size(), Drawn{ 0, false });
+  size_t begin = 0;
+  while (begin < instances_.size()) {
+    const std::string& key = instances_[begin].geometry;
+    size_t end = begin + 1;
+    while (end < instances_.size() && instances_[end].geometry == key) {
+      ++end;
+    }
+    const Triangles& triangles = cache_.at(key);
+    MeshPtr mesh(rr::r3v_mesh_from_triangles(triangles.data(), triangles.size()));
+    if (!mesh) {
+      throw std::runtime_error("creating mesh '" + key + "' failed: " + lastRendererError());
+    }
+    std::vector<uint64_t> ids(end - begin);
+    checkStatus(
+      rr::r3v_wgpu_renderer_upload_asset(target.renderer, mesh.get(), ids.size(), ids.data()),
+      "uploading mesh '" + key + "'");
+    for (size_t i = 0; i < ids.size(); ++i) {
+      target.drawn[begin + i].id = ids[i];
+      checkStatus(
+        rr::r3v_wgpu_renderer_set_asset_visibility(target.renderer, ids[i], false),
+        "hiding a new robot visual");
+    }
+    begin = end;
+  }
 }
 
 void RobotScene::setHiddenLinks(const std::vector<std::string>& links) {
@@ -228,17 +253,27 @@ void RobotScene::updateHidden() {
   }
 }
 
-void RobotScene::update(
-  const tf2_ros::Buffer& tf, const std::string& fixed_frame, rr::R3vWgpuRenderer* renderer) {
-  std::string missing;
-  for (auto& instance : instances_) {
-    if (hidden_.count(instance.link) != 0) {
-      if (instance.visible) {
-        checkStatus(
-          rr::r3v_wgpu_renderer_set_asset_visibility(renderer, instance.id, false),
-          "hiding a robot visual");
-        instance.visible = false;
+void RobotScene::update(const tf2_ros::Buffer& tf, const std::string& fixed_frame) {
+  if (targets_.empty()) {
+    return;
+  }
+  // Shows or hides instance `index` in every renderer.
+  const auto set_visible = [this](size_t index, bool visible) {
+      for (auto& target : targets_) {
+        Drawn& drawn = target.drawn[index];
+        if (drawn.visible != visible) {
+          checkStatus(
+            rr::r3v_wgpu_renderer_set_asset_visibility(target.renderer, drawn.id, visible),
+            visible ? "showing a robot visual" : "hiding a robot visual");
+          drawn.visible = visible;
+        }
       }
+    };
+  std::string missing;
+  for (size_t index = 0; index < instances_.size(); ++index) {
+    const Instance& instance = instances_[index];
+    if (hidden_.count(instance.link) != 0) {
+      set_visible(index, false);
       continue;
     }
     const auto link_to_fixed = lookupLatest(tf, fixed_frame, instance.link);
@@ -246,16 +281,13 @@ void RobotScene::update(
       missing = instance.link;
       continue;
     }
-    checkStatus(
-      rr::r3v_wgpu_renderer_set_asset_transform(
-        renderer, instance.id, toTwist(toRender(*link_to_fixed * instance.origin))),
-      "posing a robot visual");
-    if (!instance.visible) {
+    const rr::R3vTwist pose = toTwist(toRender(*link_to_fixed * instance.origin));
+    for (const auto& target : targets_) {
       checkStatus(
-        rr::r3v_wgpu_renderer_set_asset_visibility(renderer, instance.id, true),
-        "showing a robot visual");
-      instance.visible = true;
+        rr::r3v_wgpu_renderer_set_asset_transform(target.renderer, target.drawn[index].id, pose),
+        "posing a robot visual");
     }
+    set_visible(index, true);
   }
   if (!missing.empty()) {
     RCLCPP_WARN_THROTTLE(

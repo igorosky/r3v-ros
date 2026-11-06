@@ -27,9 +27,11 @@ flowchart LR
     PC["PointCloud2<br>(any number)"] --> VX[r3v_voxelizer]
     TF1["/tf"] --> VX
     VX -- "voxel stream<br>/r3v/voxels" --> RN[r3v_renderer]
+    VX -. "downsampled stream<br>/r3v/voxels_downsampled" .-> RN
     RD["/robot_description"] --> RN
     TF2["/tf"] --> RN
     RN --> IMG["/r3v/image<br>sensor_msgs/Image"]
+    RN -.-> IMGD["/r3v/image_downsampled"]
 ```
 
 ## The two nodes
@@ -38,10 +40,14 @@ flowchart LR
   `r3v_ros::VoxelizerNode`) takes any number of `sensor_msgs/PointCloud2`
   topics and ray casts them into an occupancy voxel map with
   [r3v-voxelizer](https://github.com/igorosky/r3v-voxelizer). It publishes the
-  map as a voxel stream: changes as they happen, the whole map on request.
+  map as a voxel stream: changes as they happen, the whole map on request. A
+  second stream carries a downsampled, coarser copy of the map (worked out
+  only while someone follows it).
 - **`r3v_renderer`** (executable `r3v_renderer_node`, component
   `r3v_ros::RendererNode`) follows the voxel stream and renders the map with
   the robot using [r3v-renderer](https://github.com/igorosky/r3v-renderer).
+  `mode` picks the full map, the downsampled one or both (each to its own
+  image topic).
   The robot comes from `/robot_description` (or a URDF file) and is posed from
   `/tf`. Meshes can be in any format assimp reads (STL, DAE, OBJ, glTF, ...),
   plus box, cylinder and sphere primitives. Rendering is headless on the GPU
@@ -117,8 +123,10 @@ file works for every way of running them.
 | `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | both | in |
 | `/robot_description` | `std_msgs/String` | renderer | in |
 | `/r3v/voxels` | `r3v_ros/VoxelMapUpdate` | voxelizer to renderer | stream |
+| `/r3v/voxels_downsampled` | `r3v_ros/VoxelMapUpdate` | voxelizer to renderer | stream |
 | `~/camera_pose` | `geometry_msgs/PoseStamped` | renderer | in |
 | `/r3v/image` (+ transports) | `sensor_msgs/Image` | renderer | out |
+| `/r3v/image_downsampled` (+ transports) | `sensor_msgs/Image` | renderer (mode `downsampled` or `both`) | out |
 
 Every topic, including the runtime `set_*` / `get_*` control topics, is listed
 in [docs/topics.md](docs/topics.md).
@@ -127,8 +135,8 @@ in [docs/topics.md](docs/topics.md).
 
 | Document | What is inside |
 |---|---|
-| [docs/topics.md](docs/topics.md) | All topics, runtime control, camera, enabling and disabling the renderer |
-| [docs/voxel-stream.md](docs/voxel-stream.md) | How the voxel stream and its synchronization work |
+| [docs/topics.md](docs/topics.md) | All topics, views, runtime control, camera, enabling and disabling the renderer |
+| [docs/voxel-stream.md](docs/voxel-stream.md) | How the voxel streams (full and downsampled) and their synchronization work |
 | [docs/docker.md](docs/docker.md) | Docker image, compose, GPU access, robot meshes |
 | [docs/development.md](docs/development.md) | Building without Docker, linters, tests, CI |
 | [docs/notes.md](docs/notes.md) | Behavior details and migrating from `r3v_node` |

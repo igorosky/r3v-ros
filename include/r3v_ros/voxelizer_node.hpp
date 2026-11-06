@@ -12,6 +12,7 @@
 #include "Eigen/Geometry"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/float64.hpp"
 #include "std_msgs/msg/u_int32.hpp"
@@ -31,7 +32,9 @@
 namespace r3v_ros {
 
 // Builds a voxel map from any number of point clouds and publishes it on the
-// voxel stream (see docs/voxel-stream.md), which renderer nodes follow.
+// voxel stream (see docs/voxel-stream.md), which renderer nodes follow. A
+// second stream carries the downsampled map, worked out only while someone
+// follows it.
 //
 // Needs a multi-threaded executor: point clouds wait for TF, which arrives
 // on another callback group.
@@ -43,20 +46,49 @@ public:
 private:
   using Clock = std::chrono::steady_clock;
 
-  // What the voxelizer is made with and point clouds feed it with. Changing
-  // it at runtime starts the voxel map over.
+  // What the voxelizer is made with. Changing it at runtime starts the
+  // voxel map over.
   struct VoxelizerSettings {
     double resolution;
     uint32_t destroy_threshold;
     uint32_t construct_threshold;
     uint32_t max_value;
-    std::vector<rv::Multipliers> multipliers;  // of every point cloud, as cloud_configs_
   };
+  // The coarser map of the downsampled stream. Changing it only starts that
+  // stream over.
+  struct DownsamplingSettings {
+    bool enabled;
+    uint32_t voxel_size;  // edge of a downsampled voxel, in voxels
+    uint32_t threshold;  // constructed voxels of its cube that make it present
+  };
+  struct Controls;
+  // One voxel stream and where it stands. Voxel callback group only.
+  struct Stream {
+    explicit Stream(const char* what_)
+    : what(what_) {
+    }
+    const char* what;  // the map it carries, for logs
+    rclcpp::Publisher<msg::VoxelMapUpdate>::SharedPtr pub;
+    rclcpp::Subscription<msg::FullSyncRequest>::SharedPtr request_sub;
+    // Masks of the blocks changed since the last message, the last one wins.
+    std::unordered_map<VoxelKey, uint32_t, VoxelKeyHash> pending;
+    bool full_pending = true;  // the next message is a FULL one
+    uint64_t sequence = 0;  // of the next message
+    std::optional<uint64_t> last_full;  // sequence of the last FULL message
+    Clock::time_point last_publish;
+  };
+  // rv::get_all_points_compressed or rv::get_all_downsampled.
+  using GetAllGroups = rv::VoxelGroups (*)(const void*);
 
   void declareParameters();
-  // A new, empty voxelizer with settings_ and the voxelizer.* parameters.
+  // A new, empty voxelizer with settings_, downsampling_ and the voxelizer.*
+  // parameters.
   VoxelizerPtr makeVoxelizer() const;
   void createInterfaces();
+  void createStream(
+    Stream& stream, const std::string& topic, const std::string& request_topic,
+    std::vector<msg::FullSyncRequest> Controls::* requests,
+    const rclcpp::SubscriptionOptions& control_options);
   void createSettingInterfaces(const rclcpp::SubscriptionOptions& options);
 
   // `index` is the cloud's in cloud_configs_.
@@ -68,20 +100,37 @@ private:
   // Transform of `frame` into the fixed frame.
   std::optional<Eigen::Isometry3d> lookup(
     const std::string& frame, const rclcpp::Time& stamp, std::string* error) const;
-  // Starts the map over with a new voxelizer, which renderers learn from a
-  // FULL message.
+  // Empties the voxel map, which renderers learn from a FULL message.
   void clearVoxels();
-  // Clears the voxel map unless `settings` are the current ones. Returns
+  // Starts the map over with a new voxelizer.
+  void rebuildVoxelizer();
+  // Both streams send the whole map next.
+  void restartStreams();
+  // Rebuilds the voxelizer unless `settings` are the current ones. Returns
   // whether they were not.
   bool setVoxelizerSettings(const VoxelizerSettings& settings);
+  // Multipliers of every point cloud, for the points that follow.
+  void setMultipliers(const std::vector<rv::Multipliers>& multipliers);
+  void setDownsampling(const DownsamplingSettings& downsampling);
   void publishSettings();
+  // FULL messages for the requests of `stream` not answered yet.
+  void answerSyncRequests(Stream& stream, const std::vector<msg::FullSyncRequest>& requests);
 
-  bool hasSubscribers() const;
-  void publishFull();
-  void publishDelta();
-  // Publishes `bytes` from `data` as the next message of the stream and
+  // Takes the downsampled blocks changed since the last tick, or drops the
+  // downsampled state while nobody follows the downsampled stream.
+  void collectDownsampled();
+  bool hasSubscribers(const Stream& stream) const;
+  // Publishes the next message of `stream`, whose voxels are `resolution`
+  // meters: the whole map (from `get_all`) when due, otherwise the pending
+  // blocks, or a heartbeat.
+  void publishNext(Stream& stream, double resolution, GetAllGroups get_all);
+  void publishFull(Stream& stream, double resolution, GetAllGroups get_all);
+  void publishDelta(Stream& stream, double resolution);
+  // Publishes `bytes` from `data` as the next message of `stream` and
   // returns the size of its (compressed) data.
-  size_t publishUpdate(uint8_t kind, const void* data, size_t bytes);
+  size_t publishUpdate(
+    Stream& stream, uint8_t kind, const void* data, size_t bytes, double resolution);
+  double downsampledResolution() const;
 
   // Parameters.
   std::string fixed_frame_;
@@ -94,6 +143,7 @@ private:
   int64_t voxelizer_threads_;
   int64_t voxelizer_buckets_;
   std::string stream_topic_;
+  std::string downsampled_topic_;
   size_t stream_depth_;
   double stream_rate_;
   uint8_t compression_;  // a VoxelMapUpdate::COMPRESSION_* value
@@ -105,15 +155,16 @@ private:
 
   // Voxel callback group only (point clouds and onTick()).
   VoxelizerSettings settings_;
+  std::vector<rv::Multipliers> cloud_multipliers_;  // of every point cloud, as cloud_configs_
+  DownsamplingSettings downsampling_;
   VoxelizerPtr voxelizer_;  // NULL when making it failed, tried again every tick
+  // The voxelizer may hold downsampled state, which add_points keeps up to
+  // date.
+  bool downsampled_tracked_ = false;
   std::vector<rv::PointF> points_;
-  // Masks of the blocks changed since the last message, the last one wins.
-  std::unordered_map<VoxelKey, uint32_t, VoxelKeyHash> pending_;
-  bool full_pending_ = true;  // the next message is a FULL one
-  uint64_t session_;
-  uint64_t sequence_ = 0;  // of the next message
-  std::optional<uint64_t> last_full_;  // sequence of the last FULL message
-  Clock::time_point last_publish_;
+  uint64_t session_;  // of both streams
+  Stream full_{ "voxel map" };
+  Stream downsampled_{ "downsampled voxel map" };
 
   // Changes from the control topics, waiting for the next tick. Settings are
   // changed field by field, so that changes arriving together all apply.
@@ -129,7 +180,11 @@ private:
     std::optional<uint32_t> construct_threshold;
     std::optional<uint32_t> max_value;
     std::unordered_map<size_t, MultipliersChange> multipliers;  // by cloud index
+    std::optional<bool> downsampling_enabled;
+    std::optional<uint32_t> downsampled_voxel_size;
+    std::optional<uint32_t> downsampled_threshold;
     std::vector<msg::FullSyncRequest> sync_requests;
+    std::vector<msg::FullSyncRequest> downsampled_sync_requests;
   };
   std::mutex controls_mutex_;
   Controls controls_;
@@ -140,16 +195,21 @@ private:
   TfSubscriptions tf_subs_;
   std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr clear_voxels_sub_;
-  rclcpp::Subscription<msg::FullSyncRequest>::SharedPtr sync_request_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr resolution_sub_;
   rclcpp::Subscription<std_msgs::msg::UInt32>::SharedPtr destroy_threshold_sub_;
   rclcpp::Subscription<std_msgs::msg::UInt32>::SharedPtr construct_threshold_sub_;
   rclcpp::Subscription<std_msgs::msg::UInt32>::SharedPtr max_value_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr downsampling_enabled_sub_;
+  rclcpp::Subscription<std_msgs::msg::UInt32>::SharedPtr downsampled_voxel_size_sub_;
+  rclcpp::Subscription<std_msgs::msg::UInt32>::SharedPtr downsampled_threshold_sub_;
   // Current state of the settings above, transient local for late joiners.
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr resolution_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr destroy_threshold_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr construct_threshold_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr max_value_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr downsampling_enabled_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr downsampled_voxel_size_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr downsampled_threshold_pub_;
   // Multiplier topics of every point cloud, as cloud_configs_.
   struct MultiplierTopics {
     rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr intensity_sub;
@@ -160,7 +220,6 @@ private:
     rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr target_pub;
   };
   std::vector<MultiplierTopics> multiplier_topics_;
-  rclcpp::Publisher<msg::VoxelMapUpdate>::SharedPtr stream_pub_;
   rclcpp::TimerBase::SharedPtr tick_timer_;
 };
 

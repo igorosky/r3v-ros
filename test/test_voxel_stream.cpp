@@ -137,6 +137,21 @@ TEST(VoxelStream, RejectsBadPayloads) {
   EXPECT_THROW(encodePayload(blocks.data(), bytes, 7, 1), std::runtime_error);
 }
 
+TEST(VoxelStream, ValidatesDownsampling) {
+  EXPECT_TRUE(validDownsampling(2, 1));
+  EXPECT_TRUE(validDownsampling(2, 8));
+  EXPECT_TRUE(validDownsampling(4, 1));
+  EXPECT_TRUE(validDownsampling(128, 128u * 128u * 128u));
+  EXPECT_FALSE(validDownsampling(0, 1));
+  EXPECT_FALSE(validDownsampling(1, 1));
+  EXPECT_FALSE(validDownsampling(3, 1));
+  EXPECT_FALSE(validDownsampling(12, 1));
+  EXPECT_FALSE(validDownsampling(256, 1));
+  EXPECT_FALSE(validDownsampling(2, 0));
+  EXPECT_FALSE(validDownsampling(2, 9));
+  EXPECT_FALSE(validDownsampling(128, 128u * 128u * 128u + 1));
+}
+
 TEST(VoxelMap, ValidatesBlocksAndKeys) {
   EXPECT_TRUE(validBlock({ -4, 8, -2, 1 }));
   EXPECT_FALSE(validBlock({ -2, 8, 0, 1 }));

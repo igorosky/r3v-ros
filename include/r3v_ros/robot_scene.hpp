@@ -22,7 +22,8 @@
 
 namespace r3v_ros {
 
-// Visuals of a URDF robot as renderer mesh instances, posed from TF.
+// Visuals of a URDF robot as mesh instances of any number of renderers,
+// posed from TF.
 class RobotScene
 {
 public:
@@ -30,17 +31,20 @@ public:
     rclcpp::Logger logger, rclcpp::Clock::SharedPtr clock, MeshLoader loader,
     bool double_sided);
 
-  // Replaces the robot with the one described by `urdf_xml`. The renderer
-  // cannot delete assets, so instances of a previous robot are hidden.
-  // Throws std::runtime_error when the URDF cannot be parsed.
-  void load(const std::string& urdf_xml, rr::R3vWgpuRenderer* renderer);
+  // Draws the robot with `renderer` too, from the next update() on.
+  // Uploads the current robot to it. `renderer` has to outlive the scene.
+  void addRenderer(rr::R3vWgpuRenderer* renderer);
+
+  // Replaces the robot with the one described by `urdf_xml`, in every
+  // renderer. The renderer cannot delete assets, so instances of a previous
+  // robot are hidden. Throws std::runtime_error when the URDF cannot be
+  // parsed.
+  void load(const std::string& urdf_xml);
 
   // Poses every instance from the latest TF of its link in `fixed_frame`
   // (see lookupLatest()). Instances stay hidden until their link has a
   // transform, and while their link is hidden by setHiddenLinks().
-  void update(
-    const tf2_ros::Buffer& tf, const std::string& fixed_frame,
-    rr::R3vWgpuRenderer* renderer);
+  void update(const tf2_ros::Buffer& tf, const std::string& fixed_frame);
 
   // Transform of `frame` into `fixed_frame` (identity when either is empty or
   // they are equal) from the latest TF. A link of the robot is composed of the
@@ -61,9 +65,20 @@ private:
   struct Instance {
     std::string link;
     Eigen::Isometry3d origin;  // visual in link frame
+    std::string geometry;  // key in cache_
+  };
+  // An instance as one renderer holds it.
+  struct Drawn {
     uint64_t id;
     bool visible;
   };
+  struct Target {
+    rr::R3vWgpuRenderer* renderer;
+    std::vector<Drawn> drawn;  // as instances_
+  };
+
+  // Uploads instances_ to `target`, hidden.
+  void upload(Target& target);
 
   // Names a visual geometry (shape, size, mesh file, scale) in the cache.
   std::string geometryKey(const urdf::Geometry& geometry) const;
@@ -79,7 +94,8 @@ private:
   rclcpp::Clock::SharedPtr clock_;
   MeshLoader loader_;
   bool double_sided_;
-  std::vector<Instance> instances_;
+  std::vector<Instance> instances_;  // instances of a geometry next to each other
+  std::vector<Target> targets_;
   std::string root_;  // root link of the URDF, empty before load()
   std::unordered_map<std::string, std::vector<std::string>> children_;  // link -> child links
   std::vector<std::string> hidden_roots_;

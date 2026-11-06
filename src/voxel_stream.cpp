@@ -19,6 +19,14 @@ bool validCompressionLevel(int level) {
   return level >= ZSTD_minCLevel() && level <= ZSTD_maxCLevel();
 }
 
+bool validDownsampling(uint32_t voxel_size, uint32_t threshold) {
+  if (voxel_size < 2 || voxel_size > kMaxDownsampledVoxelSize ||
+    (voxel_size & (voxel_size - 1)) != 0) {
+    return false;
+  }
+  return threshold >= 1 && threshold <= voxel_size * voxel_size * voxel_size;
+}
+
 std::vector<uint8_t> encodePayload(
   const void* data, size_t bytes, uint8_t compression, int level) {
   const auto* begin = static_cast<const uint8_t*>(data);

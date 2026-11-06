@@ -18,6 +18,8 @@
     #
     # r3v_ros/msg/VoxelMapUpdate from the voxelizer to the renderers.
     voxel_stream.topic: /r3v/voxels
+    # The same for the downsampled map (see downsampling of r3v_voxelizer).
+    voxel_stream.downsampled_topic: /r3v/voxels_downsampled
     # Messages kept for a subscriber that is behind (reliable, keep last).
     # Losing more makes it ask for the whole map again.
     voxel_stream.depth: 100
@@ -57,14 +59,31 @@
       # The three multipliers are defaults, every point cloud can set its own.
       # The thresholds and max_value change at runtime through
       # ~/set_<name> (std_msgs/UInt32), ~/get_<name> holds the current
-      # values. Changing any of these, or a point cloud's multipliers, clears
-      # the voxel map (so does ~/clear_voxels, std_msgs/Empty).
+      # values. Changing the resolution, a threshold or max_value clears the
+      # voxel map (so does ~/clear_voxels, std_msgs/Empty). Changed
+      # multipliers only apply to the points that follow.
       intensity_multiplier: 1.0
       hit_multiplier: 1
       target_multiplier: 2
       destroy_threshold: 0
       construct_threshold: 2
       max_value: 10
+
+    # A coarser copy of the voxel map on voxel_stream.downsampled_topic. One
+    # downsampled voxel stands for a cube of voxel_size^3 voxels and is there
+    # while at least threshold of them are. It is only worked out while the
+    # downsampled stream has subscribers. Each setting changes at runtime
+    # through ~/downsampling/set_<name> (std_msgs/Bool for enabled,
+    # std_msgs/UInt32 for the others), ~/downsampling/get_<name> holds the
+    # current one. A change sends the downsampled map again, the voxel map
+    # stays.
+    downsampling:
+      # Disabled, the downsampled stream carries an empty map.
+      enabled: true
+      # Edge of a downsampled voxel in voxels, a power of two from 2 to 128.
+      voxel_size: 4
+      # From 1 to voxel_size^3.
+      threshold: 1
 
     point_clouds:
       # Any number of sensor_msgs/PointCloud2 inputs, each configured under
@@ -102,10 +121,16 @@
 
 /**/r3v_renderer:
   ros__parameters:
-    # Render at start. A disabled renderer drops TF, the voxel stream and
+    # Render at start. A disabled renderer drops TF, the voxel streams and
     # robot_description and renders nothing; ~/set_enabled (std_msgs/Bool)
     # switches it at runtime, ~/get_enabled holds the current state.
     enabled: true
+    # Which voxel maps are rendered, each to its own image topic: full
+    # (output.topic), downsampled (output.downsampled_topic), both or none.
+    # Each one follows its voxel stream and has its own renderer, made the
+    # first time it is used and kept until exit. ~/set_mode (std_msgs/String)
+    # changes it at runtime, ~/get_mode holds the current one.
+    mode: full
     # Frames per second.
     rate: 15.0
 
@@ -113,6 +138,8 @@
       # Where the voxelizer takes requests for the whole map: its
       # ~/request_full_sync.
       request_topic: /r3v_voxelizer/request_full_sync
+      # The same for the downsampled map.
+      downsampled_request_topic: /r3v_voxelizer/downsampled/request_full_sync
       # Seconds between requests until the whole map arrives.
       sync_retry: 1.0
 
@@ -135,13 +162,15 @@
       # image_transport base topic: raw sensor_msgs/Image on it, plus
       # <topic>/compressed etc. for every installed transport plugin.
       topic: /r3v/image
+      # The same for the downsampled map (mode downsampled or both).
+      downsampled_topic: /r3v/image_downsampled
       width: 1280
       height: 720
       # bgr8, rgb8, bgra8 or rgba8.
       encoding: bgr8
       # Header frame_id of the images; empty means fixed_frame.
       frame_id: ""
-      # Only render while someone subscribes.
+      # Only render while someone subscribes (each image topic on its own).
       lazy: true
       # Opaque background, sRGB red, green and blue between 0 and 1.
       # ~/background/set_color (std_msgs/ColorRGBA, alpha ignored) changes it
@@ -188,6 +217,8 @@
       # Draw the voxel map; ~/voxels_visible (std_msgs/Bool) switches it at
       # runtime. The voxelizer keeps building the map while it is hidden.
       visible: true
+      # The same for the downsampled map, ~/downsampled/voxels_visible.
+      downsampled_visible: true
       # Smooth the voxel surface with marching cubes instead of drawing the
       # voxel faces. Closes the gaps a thin, steep surface (e.g. ground seen
       # by a lidar) leaves between voxels that only touch at an edge.

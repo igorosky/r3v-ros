@@ -81,6 +81,7 @@ rclcpp_components_register_nodes(r3v_voxelizer_component "r3v_ros::VoxelizerNode
 
 add_library(r3v_renderer_component SHARED
   src/camera.cpp
+  src/grid_scene.cpp
   src/mesh_loader.cpp
   src/primitives.cpp
   src/renderer_handles.cpp
@@ -144,6 +145,11 @@ if(BUILD_TESTING)
   target_compile_options(test_voxelizer_node PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
   ament_target_dependencies(test_voxelizer_node r3v_interfaces rclcpp)
   target_link_libraries(test_voxelizer_node r3v_voxelizer_component)
+  # The renderer node's grids; its node renders nothing, no GPU.
+  ament_add_gtest(test_grids test/test_grids.cpp TIMEOUT 60)
+  target_compile_options(test_grids PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
+  ament_target_dependencies(test_grids r3v_interfaces rclcpp)
+  target_link_libraries(test_grids r3v_renderer_component)
 endif()
 
 ament_package()

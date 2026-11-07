@@ -51,6 +51,8 @@ with their default in parentheses, or fixed names relative to the node (`~/`).
 | `~/colormap/set_height_relative` | `std_msgs/Bool` | in |
 | `~/colormap/set_height_offset`, `set_height_scale` | `std_msgs/Float64` | in |
 | `~/colormap/set_height_bands` | `std_msgs/UInt32` | in |
+| `~/grids/set` | `r3v_interfaces/GridArray` | in |
+| `~/grids/get` | `r3v_interfaces/GridArray` (transient local) | out |
 | `voxel_stream.request_topic` (`/r3v_voxelizer/request_full_sync`) | `r3v_interfaces/FullSyncRequest` | out |
 | `voxel_stream.downsampled_request_topic` (`/r3v_voxelizer/downsampled/request_full_sync`) | `r3v_interfaces/FullSyncRequest` | out |
 | `output.topic` (`/r3v/image`) + transports | `sensor_msgs/Image` (best effort, `output.qos`) | out |
@@ -141,6 +143,7 @@ the new size, or send both within one period.
 | `~/colormap/set_height_offset` | `std_msgs/Float64` | `colormap.height_offset` | Meters added to the neutral height, finite |
 | `~/colormap/set_height_scale` | `std_msgs/Float64` | `colormap.height_scale` | Meters from the neutral height where colors start changing slower, positive |
 | `~/colormap/set_height_bands` | `std_msgs/UInt32` | `colormap.height_bands` | 0 for a continuous colormap, otherwise that many flat bands, at most 256 |
+| `~/grids/set` | `r3v_interfaces/GridArray` | none (no grids) | Every grid to draw, replacing the previous ones, see [below](#grids) |
 
 **Hidden links.** `~/hidden_links` takes comma or space separated link names.
 Every listed link is hidden together with all links below it in the URDF tree
@@ -151,6 +154,33 @@ again. The setting survives a new robot description.
 (`set_depth_range`, `set_color_offset`). `height` colors them by their height
 above a neutral height (the `set_height_*` topics).
 
+### Grids
+
+`~/grids/set` replaces every grid the renderer draws (in every view) with the
+ones of the `r3v_interfaces/GridArray`; an empty array removes them all. A
+grid (`r3v_interfaces/Grid`) is lines `resolution` apart along the x, y and z
+axes of its `pose`, spanning `size` centred on the pose's origin; a size of 0
+on an axis leaves no lines along it, so `size` (10, 10, 0) is a 10 x 10 m plane
+in the pose's xy plane. Lines go through the origin and along the boundary, so
+a size that is not a multiple of the resolution leaves narrower cells at the
+edges. Lines are opaque, one pixel wide and hidden behind voxels and the robot.
+
+- `frame` is the TF frame the grid moves with, empty for `fixed_frame`. Robot
+  links are posed exactly like the robot's visuals (latest URDF root pose
+  composed with the latest link transform). A grid shows once its frame has a
+  transform to `fixed_frame` and keeps its last pose while TF is missing.
+- An array is taken whole or not at all: more than 64 grids, a non-finite or
+  zero quaternion, a negative or non-finite size, a resolution that is not
+  positive, color components outside 0..1, or a grid of more than 2^20 lines
+  (r3v-renderer's limit) drops it with a warning, and `~/grids/get` stays as it
+  was. The color's alpha is ignored.
+- `~/grids/get` holds the array drawn, exactly as it was sent (an empty frame
+  stays empty). It starts empty, so a client that keeps grids elsewhere (the
+  web app keeps them in key_value_storage) sees the node (re)start and sends
+  them again. Sending the array that is drawn already changes nothing and
+  publishes nothing.
+- There is no parameter for grids: the node starts without any.
+
 ## Reading the current settings
 
 Every setting with a `set_*` topic is published on the matching `get_*` topic
@@ -158,7 +188,7 @@ of its node, for example:
 
 - `r3v_renderer`: `~/get_enabled`, `~/get_mode`, `~/marching_cubes/get_enabled`,
   `~/background/get_color`, `~/colormap/get_depth_range`,
-  `~/colormap/get_mode`, ...
+  `~/colormap/get_mode`, `~/grids/get`, ...
 - `r3v_voxelizer`: `~/get_resolution`,
   `~/point_clouds/<name>/get_hit_multiplier`, `~/downsampling/get_voxel_size`,
   ...

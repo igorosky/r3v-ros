@@ -126,6 +126,8 @@
 
 /**/r3v_renderer:
   ros__parameters:
+    # Grids have no parameter: the node starts without any and draws what
+    # ~/grids/set (r3v_interfaces/GridArray) sends, see docs/topics.md "Grids".
     # Render at start. A disabled renderer drops TF, the voxel streams and
     # robot_description and renders nothing; ~/set_enabled (std_msgs/Bool)
     # switches it at runtime, ~/get_enabled holds the current state.

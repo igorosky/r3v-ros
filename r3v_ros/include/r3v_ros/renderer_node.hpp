@@ -12,6 +12,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "image_transport/image_transport.hpp"
 #include "r3v_interfaces/msg/full_sync_request.hpp"
+#include "r3v_interfaces/msg/grid_array.hpp"
 #include "r3v_interfaces/msg/voxel_map_update.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
@@ -26,6 +27,7 @@
 #endif
 
 #include "r3v_ros/camera.hpp"
+#include "r3v_ros/grid_scene.hpp"
 #include "r3v_ros/node_common.hpp"
 #include "r3v_ros/renderer_handles.hpp"
 #include "r3v_ros/robot_scene.hpp"
@@ -164,6 +166,8 @@ private:
   void setMarchingCubes(bool enabled);
   void setBackgroundColor(const rr::R3vVec3& color);
   void setColormap(const Colormap& colormap);
+  // Replaces the grids, unless `grids` are the ones drawn already.
+  void setGrids(const msg::GridArray& grids);
   // Height coloring relative to height_frame_: follows that frame's height.
   void updateHeightReference();
   void publishEnabled();
@@ -171,6 +175,7 @@ private:
   void publishMarchingCubes();
   void publishBackgroundColor();
   void publishColormap();
+  void publishGrids();
   void publish(View& view, const rclcpp::Time& stamp);
 
   // Parameters.
@@ -202,6 +207,7 @@ private:
   // Declared first so they outlive every callback using them.
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<RobotScene> robot_;
+  std::unique_ptr<GridScene> grids_;
   std::mutex stream_mutex_;
 
   std::array<View, 2> views_{ View("voxel map"), View("downsampled voxel map") };
@@ -222,6 +228,7 @@ private:
     std::optional<double> height_offset;
     std::optional<double> height_scale;
     std::optional<uint32_t> height_bands;
+    std::optional<msg::GridArray> grids;
   };
   std::mutex controls_mutex_;
   Controls controls_;
@@ -236,6 +243,7 @@ private:
   rr::R3vVec3 background_color_;  // sRGB, each component in 0..1
   Colormap colormap_;
   double height_reference_ = 0.0;  // height_frame_ z in fixed_frame_ the renderer got
+  msg::GridArray grids_msg_;  // the grids drawn, as ~/grids/set sent them
 
   rclcpp::CallbackGroup::SharedPtr tf_group_;
   rclcpp::CallbackGroup::SharedPtr render_group_;
@@ -249,6 +257,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr marching_cubes_sub_;
   rclcpp::Subscription<std_msgs::msg::ColorRGBA>::SharedPtr background_color_sub_;
   std::vector<rclcpp::SubscriptionBase::SharedPtr> colormap_subs_;
+  rclcpp::Subscription<msg::GridArray>::SharedPtr grids_sub_;
   // Current state of the settings above, transient local for late joiners.
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr enabled_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr mode_pub_;
@@ -261,6 +270,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr height_offset_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr height_scale_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr height_bands_pub_;
+  rclcpp::Publisher<msg::GridArray>::SharedPtr grids_pub_;
   rclcpp::TimerBase::SharedPtr render_timer_;
   rclcpp::TimerBase::SharedPtr sync_timer_;
 };

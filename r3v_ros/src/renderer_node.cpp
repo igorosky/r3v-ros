@@ -66,6 +66,7 @@ RendererNode::RendererNode(const rclcpp::NodeOptions& options)
   robot_ = std::make_unique<RobotScene>(
     get_logger(), get_clock(), MeshLoader(package_paths_), double_sided_);
   robot_->setHiddenLinks(hidden_links_);
+  grids_ = std::make_unique<GridScene>(get_logger(), get_clock());
   if (!robot_description_file_.empty()) {
     std::ifstream file(robot_description_file_);
     require(
@@ -233,6 +234,7 @@ void RendererNode::createView(View& view) {
   configureTesselator(view);
 
   robot_->addRenderer(view.renderer.get());
+  grids_->addRenderer(view.renderer.get());
   view.request_pub = create_publisher<msg::FullSyncRequest>(view.request_topic, rclcpp::QoS(10));
   view.image_pub = image_transport::create_publisher(
     this, view.output_topic,
@@ -344,6 +346,17 @@ void RendererNode::createInterfaces() {
       std::lock_guard<std::mutex> lock(controls_mutex_);
       controls_.background_color = rr::R3vVec3{ msg->r, msg->g, msg->b };
     }, control_options);
+  grids_sub_ = create_subscription<msg::GridArray>(
+    "~/grids/set", rclcpp::QoS(10),
+    [this](msg::GridArray::ConstSharedPtr msg) {
+      if (const auto problem = gridsProblem(*msg)) {
+        RCLCPP_WARN(
+          get_logger(), "Ignoring %zu grids: %s", msg->grids.size(), problem->c_str());
+        return;
+      }
+      std::lock_guard<std::mutex> lock(controls_mutex_);
+      controls_.grids = *msg;
+    }, control_options);
 
   const rclcpp::QoS state_qos = rclcpp::QoS(1).reliable().transient_local();
   enabled_pub_ = create_publisher<std_msgs::msg::Bool>("~/get_enabled", state_qos);
@@ -352,10 +365,13 @@ void RendererNode::createInterfaces() {
     create_publisher<std_msgs::msg::Bool>("~/marching_cubes/get_enabled", state_qos);
   background_color_pub_ =
     create_publisher<std_msgs::msg::ColorRGBA>("~/background/get_color", state_qos);
+  grids_pub_ = create_publisher<msg::GridArray>("~/grids/get", state_qos);
   publishEnabled();
   publishMode();
   publishMarchingCubes();
   publishBackgroundColor();
+  // Empty at start, which tells whoever sets them that the node (re)started.
+  publishGrids();
   createColormapInterfaces(control_options);
 
   updateViews();
@@ -739,6 +755,9 @@ void RendererNode::applyControls() {
   colormap.height_scale = controls.height_scale.value_or(colormap.height_scale);
   colormap.height_bands = controls.height_bands.value_or(colormap.height_bands);
   setColormap(colormap);
+  if (controls.grids) {
+    setGrids(*controls.grids);
+  }
 }
 
 void RendererNode::flushVoxels(View& view) {
@@ -897,6 +916,22 @@ void RendererNode::setColormap(const Colormap& colormap) {
   }
 }
 
+void RendererNode::setGrids(const msg::GridArray& grids) {
+  if (grids == grids_msg_) {
+    return;
+  }
+  std::vector<GridSpec> specs;
+  specs.reserve(grids.grids.size());
+  for (const auto& grid : grids.grids) {
+    specs.push_back(gridSpec(grid, fixed_frame_));
+  }
+  grids_->set(std::move(specs));
+  // Echoed as received, so that whoever set them can compare.
+  grids_msg_ = grids;
+  publishGrids();
+  RCLCPP_INFO(get_logger(), "%zu grids", grids.grids.size());
+}
+
 void RendererNode::updateHeightReference() {
   if (!colormap_.by_height || !colormap_.height_relative) {
     return;
@@ -965,6 +1000,10 @@ void RendererNode::publishColormap() {
   height_bands_pub_->publish(bands);
 }
 
+void RendererNode::publishGrids() {
+  grids_pub_->publish(grids_msg_);
+}
+
 bool RendererNode::cameraView(CameraView& view) const {
   if (camera_pose_) {
     const auto to_fixed =
@@ -1011,6 +1050,7 @@ void RendererNode::onRender() {
     }
     const auto t1 = Clock::now();
     robot_->update(*tf_buffer_, fixed_frame_);
+    grids_->update(*robot_, *tf_buffer_, fixed_frame_);
     const auto t2 = Clock::now();
 
     std::array<bool, 2> wanted{ };

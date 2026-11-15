@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-          path: src/r3v_ros
+          path: src/r3v-ros
           # The patch report needs the merge base with master.
           fetch-depth: 0
 
@@ -64,7 +64,7 @@ jobs:
       - name: Cargo cache key
         id: cargo-key
         run: |
-          key=$( { git -C src/r3v_ros submodule status; rustc -V; } | sha256sum | cut -c1-16)
+          key=$( { git -C src/r3v-ros submodule status; rustc -V; } | sha256sum | cut -c1-16)
           echo "key=${key}" >> "${GITHUB_OUTPUT}"
 
       - uses: actions/cache/restore@v6
@@ -106,16 +106,16 @@ jobs:
             --process-gcno \
             --branch-coverage \
             --exclude /usr/ /opt/ros/ "${ws}/build/" "${ws}/install/" \
-              "${ws}/src/r3v_ros/test/" "${ws}/src/r3v_ros/r3v-renderer/" \
-              "${ws}/src/r3v_ros/r3v-voxelizer/" \
+              "${ws}/src/r3v-ros/r3v_ros/test/" "${ws}/src/r3v-ros/r3v_ros/r3v-renderer/" \
+              "${ws}/src/r3v-ros/r3v_ros/r3v-voxelizer/" \
             --jobs "$(nproc)" \
             --lcov \
             --output coverage.info
 
-      - uses: ./src/r3v_ros/.github/actions/coverview
+      - uses: ./src/r3v-ros/.github/actions/coverview
         with:
           info: coverage.info
-          repo-root: src/r3v_ros
+          repo-root: src/r3v-ros
           pathspec: "*.cpp *.hpp"
           title: r3v-ros coverage
           dataset: colcon-test

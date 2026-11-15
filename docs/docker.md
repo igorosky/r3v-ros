@@ -33,7 +33,7 @@ docker run --rm -it --net=host --ipc=host --device /dev/dri \
 ```
 
 Without the `-v` option the image uses its copy of
-[config/r3v.yaml](../config/r3v.yaml).
+[config/r3v.yaml](../r3v_ros/config/r3v.yaml).
 
 ### Compose
 
@@ -59,7 +59,7 @@ start the combined `r3v` service too.
 | No GPU | Nothing. The image falls back to lavapipe (software Vulkan). Works, but slow for big frames. |
 
 The renderer always needs the GPU. The voxelizer needs it only with
-`voxelizer.backend: wgpu` (the default in `config/r3v.yaml`).
+`voxelizer.backend: wgpu` (the default in `r3v_ros/config/r3v.yaml`).
 
 ## Robot meshes
 

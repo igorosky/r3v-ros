@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 
+#include "Eigen/Geometry"
 #include "r3v-renderer.hpp"
 
 namespace r3v_ros {
@@ -33,5 +34,8 @@ std::string lastRendererError();
 // Throws std::runtime_error naming `what` and the library's error unless
 // `status` is R3V_OK.
 void checkStatus(rr::R3vStatus status, const std::string& what);
+
+// `pose` as the renderer takes transforms.
+rr::R3vTwist toTwist(const Eigen::Isometry3d& pose);
 
 }  // namespace r3v_ros

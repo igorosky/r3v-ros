@@ -2,15 +2,19 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-#include "r3v_ros/msg/voxel_map_update.hpp"
+#include "r3v_interfaces/msg/voxel_map_update.hpp"
 
 namespace r3v_ros {
 
-// Payload of the voxel stream (r3v_ros/msg/VoxelMapUpdate), shared by the
+// The voxel stream messages (VoxelMapUpdate, FullSyncRequest).
+namespace msg = r3v_interfaces::msg;
+
+// Payload of the voxel stream (r3v_interfaces/msg/VoxelMapUpdate), shared by the
 // voxelizer and the renderer node. It copies the structs of the r3v crates
 // as they are, which are little endian on every platform they run on.
 static_assert(
@@ -58,6 +62,14 @@ struct VoxelKeyHash {
 
 // Whether zstd takes `level`.
 bool validCompressionLevel(int level);
+
+// The VoxelMapUpdate::COMPRESSION_* value of a compression parameter (zstd
+// or none), nullopt for any other name.
+std::optional<uint8_t> parseCompression(const std::string& name);
+
+// Name of a VoxelMapUpdate::COMPRESSION_* value, as parseCompression() takes
+// it ("unknown" for any other value).
+const char * compressionName(uint8_t compression);
 
 // Largest edge of a downsampled voxel, in voxels.
 constexpr uint32_t kMaxDownsampledVoxelSize = 128;

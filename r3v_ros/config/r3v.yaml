@@ -16,7 +16,7 @@
     # key at the top level only, so a voxel_stream group here would be
     # replaced by the voxel_stream groups of the nodes below.
     #
-    # r3v_ros/msg/VoxelMapUpdate from the voxelizer to the renderers.
+    # r3v_interfaces/msg/VoxelMapUpdate from the voxelizer to the renderers.
     voxel_stream.topic: /r3v/voxels
     # The same for the downsampled map (see downsampling of r3v_voxelizer).
     voxel_stream.downsampled_topic: /r3v/voxels_downsampled
@@ -37,6 +37,11 @@
       # none.
       compression: zstd
       compression_level: 1
+      # The same for the downsampled stream (downsampling below). Left out,
+      # it takes compression and compression_level. The r3v launch file sets
+      # zstd: whoever follows the downsampled stream is usually elsewhere.
+      # downsampled_compression: zstd
+      # downsampled_compression_level: 1
       # Seconds without a message after which an empty one goes out, so that
       # renderers notice a restart and can ask for the whole map.
       heartbeat_period: 1.0
@@ -121,6 +126,8 @@
 
 /**/r3v_renderer:
   ros__parameters:
+    # Grids have no parameter: the node starts without any and draws what
+    # ~/grids/set (r3v_interfaces/GridArray) sends, see docs/topics.md "Grids".
     # Render at start. A disabled renderer drops TF, the voxel streams and
     # robot_description and renders nothing; ~/set_enabled (std_msgs/Bool)
     # switches it at runtime, ~/get_enabled holds the current state.

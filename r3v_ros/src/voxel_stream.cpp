@@ -19,6 +19,27 @@ bool validCompressionLevel(int level) {
   return level >= ZSTD_minCLevel() && level <= ZSTD_maxCLevel();
 }
 
+std::optional<uint8_t> parseCompression(const std::string& name) {
+  if (name == "zstd") {
+    return VoxelMapUpdate::COMPRESSION_ZSTD;
+  }
+  if (name == "none") {
+    return VoxelMapUpdate::COMPRESSION_NONE;
+  }
+  return std::nullopt;
+}
+
+const char * compressionName(uint8_t compression) {
+  switch (compression) {
+    case VoxelMapUpdate::COMPRESSION_ZSTD:
+      return "zstd";
+    case VoxelMapUpdate::COMPRESSION_NONE:
+      return "none";
+    default:
+      return "unknown";
+  }
+}
+
 bool validDownsampling(uint32_t voxel_size, uint32_t threshold) {
   if (voxel_size < 2 || voxel_size > kMaxDownsampledVoxelSize ||
     (voxel_size & (voxel_size - 1)) != 0) {

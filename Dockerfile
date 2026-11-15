@@ -26,7 +26,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_TOOLCHAIN}"
 
 WORKDIR /ws
-COPY package.xml src/r3v_ros/package.xml
+COPY r3v_interfaces/package.xml src/r3v-ros/r3v_interfaces/package.xml
+COPY r3v_ros/package.xml src/r3v-ros/r3v_ros/package.xml
 RUN apt-get update \
  && rosdep update --rosdistro "${ROS_DISTRO}" \
  && rosdep install --from-paths src --ignore-src -y --rosdistro "${ROS_DISTRO}" \
@@ -35,7 +36,7 @@ RUN apt-get update \
 
 FROM deps AS builder
 ARG ROS_DISTRO
-COPY . src/r3v_ros
+COPY . src/r3v-ros
 # Cached cargo registry and target dir: rebuilds skip compiling the Rust
 # crates unless they changed. One target cache per distro (different glibc).
 RUN --mount=type=cache,target=/opt/rust/cargo/registry \
@@ -52,7 +53,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility \
     XDG_RUNTIME_DIR=/tmp/runtime-root
 
-COPY package.xml /tmp/r3v_ros/package.xml
+COPY r3v_interfaces/package.xml /tmp/r3v-ros/r3v_interfaces/package.xml
+COPY r3v_ros/package.xml /tmp/r3v-ros/r3v_ros/package.xml
 # Vulkan loader + Mesa drivers (Intel, AMD, lavapipe CPU fallback); NVIDIA
 # drivers come from the NVIDIA container toolkit.
 RUN apt-get update \
@@ -60,14 +62,14 @@ RUN apt-get update \
       libegl1 libvulkan1 mesa-vulkan-drivers \
       "ros-${ROS_DISTRO}-image-transport-plugins" \
  && rosdep update --rosdistro "${ROS_DISTRO}" \
- && rosdep install --from-paths /tmp/r3v_ros --ignore-src -y -t exec --rosdistro "${ROS_DISTRO}" \
- && rm -rf /var/lib/apt/lists/* /tmp/r3v_ros
+ && rosdep install --from-paths /tmp/r3v-ros --ignore-src -y -t exec --rosdistro "${ROS_DISTRO}" \
+ && rm -rf /var/lib/apt/lists/* /tmp/r3v-ros
 
 # wgpu probes EGL/Wayland too, which wants a runtime dir.
 RUN mkdir -m 0700 -p "${XDG_RUNTIME_DIR}"
 
 COPY --from=builder /ws/install /ws/install
-COPY config/r3v.yaml /config/r3v.yaml
+COPY r3v_ros/config/r3v.yaml /config/r3v.yaml
 COPY docker/entrypoint.sh /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

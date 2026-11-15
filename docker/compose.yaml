@@ -21,7 +21,7 @@ x-r3v: &r3v
   devices:
     - /dev/dri:/dev/dri
   volumes:
-    - ../config/r3v.yaml:/config/r3v.yaml:ro
+    - ../r3v_ros/config/r3v.yaml:/config/r3v.yaml:ro
     # Meshes of robots whose packages are not installed in the image; list
     # /robot in robot_description.package_paths.
     # - /path/to/dir/holding/robot_description_packages:/robot:ro
@@ -40,7 +40,7 @@ services:
     <<: *r3v
 
   # Point clouds and TF in, the voxel stream out. The wgpu backend (the
-  # default in config/r3v.yaml) needs the GPU; the CPU backends do not.
+  # default in r3v_ros/config/r3v.yaml) needs the GPU; the CPU backends do not.
   voxelizer:
     <<: *r3v
     profiles: [robot]

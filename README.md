@@ -34,6 +34,18 @@ flowchart LR
     RN -.-> IMGD["/r3v/image_downsampled"]
 ```
 
+## Packages
+
+The repository holds two ROS packages:
+
+- [r3v_ros](r3v_ros): the two nodes below, with the Rust crates they are
+  built on as git submodules ([r3v-voxelizer](r3v_ros/r3v-voxelizer),
+  [r3v-renderer](r3v_ros/r3v-renderer)).
+- [r3v_interfaces](r3v_interfaces): the voxel stream messages and the
+  renderer's grid messages only, so that whatever only passes them on
+  (rosbridge, bridges between machines) or renders the stream elsewhere (e.g.
+  r3v-renderer's JS bindings in a browser) builds without Rust.
+
 ## The two nodes
 
 - **`r3v_voxelizer`** (executable `r3v_voxelizer_node`, component
@@ -45,7 +57,8 @@ flowchart LR
   only while someone follows it).
 - **`r3v_renderer`** (executable `r3v_renderer_node`, component
   `r3v_ros::RendererNode`) follows the voxel stream and renders the map with
-  the robot using [r3v-renderer](https://github.com/igorosky/r3v-renderer).
+  the robot using [r3v-renderer](https://github.com/igorosky/r3v-renderer),
+  plus line grids placed in TF frames (on the ground, on a robot link).
   `mode` picks the full map, the downsampled one or both (each to its own
   image topic).
   The robot comes from `/robot_description` (or a URDF file) and is posed from
@@ -76,7 +89,7 @@ docker run --rm -it --net=host --ipc=host --device /dev/dri \
   r3v-ros:jazzy
 ```
 
-Start from a copy of [config/r3v.yaml](config/r3v.yaml) as `my_config.yaml`
+Start from a copy of [config/r3v.yaml](r3v_ros/config/r3v.yaml) as `my_config.yaml`
 and set at least `fixed_frame` and your point clouds (`point_clouds.names`
 and `point_clouds.<name>.topic`). The rendered view is published on
 `/r3v/image`, for example `rqt_image_view` shows it.
@@ -102,7 +115,9 @@ ros2 launch r3v_ros renderer.launch.py config:=/path/to/r3v.yaml    # base stati
 `r3v.launch.py` loads both nodes into one `component_container_mt`, where the
 voxel stream goes from one to the other without the middleware (and
 uncompressed; `compression:=zstd` compresses it for renderers elsewhere
-following it too).
+following it too). The downsampled stream is zstd compressed there, as its
+followers are usually elsewhere (`downsampled_compression:=none` to change
+that).
 
 When split, the renderer needs the voxel stream, TF and `robot_description`
 from the robot, the voxelizer needs only the point clouds and TF. All launch
@@ -110,7 +125,7 @@ files take `config`, `namespace` and `use_sim_time`.
 
 ## Configuration
 
-Both nodes read one parameter file. [config/r3v.yaml](config/r3v.yaml)
+Both nodes read one parameter file. [config/r3v.yaml](r3v_ros/config/r3v.yaml)
 documents every parameter. It has a section read by both nodes and one per
 node (keyed by the node names `r3v_voxelizer` and `r3v_renderer`), so the same
 file works for every way of running them.
@@ -122,9 +137,10 @@ file works for every way of running them.
 | `point_clouds.<name>.topic` | `sensor_msgs/PointCloud2` | voxelizer | in |
 | `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | both | in |
 | `/robot_description` | `std_msgs/String` | renderer | in |
-| `/r3v/voxels` | `r3v_ros/VoxelMapUpdate` | voxelizer to renderer | stream |
-| `/r3v/voxels_downsampled` | `r3v_ros/VoxelMapUpdate` | voxelizer to renderer | stream |
+| `/r3v/voxels` | `r3v_interfaces/VoxelMapUpdate` | voxelizer to renderer | stream |
+| `/r3v/voxels_downsampled` | `r3v_interfaces/VoxelMapUpdate` | voxelizer to renderer | stream |
 | `~/camera_pose` | `geometry_msgs/PoseStamped` | renderer | in |
+| `~/grids/set` | `r3v_interfaces/GridArray` | renderer | in |
 | `/r3v/image` (+ transports) | `sensor_msgs/Image` | renderer | out |
 | `/r3v/image_downsampled` (+ transports) | `sensor_msgs/Image` | renderer (mode `downsampled` or `both`) | out |
 
@@ -149,7 +165,8 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 colcon test --packages-select r3v_ros && colcon test-result --verbose
 ```
 
-Needs ROS 2 Humble or Jazzy and Rust from rustup. Details, linters, CI and
+Needs ROS 2 Humble or Jazzy and Rust from rustup (`colcon build
+--packages-select r3v_interfaces` builds the messages alone, without Rust). Details, linters, CI and
 coverage are in [docs/development.md](docs/development.md).
 
 ## Part of r3v

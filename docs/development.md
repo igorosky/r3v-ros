@@ -9,34 +9,37 @@ You need:
 - ROS 2 Humble or Jazzy,
 - Rust from [rustup](https://rustup.rs) (the crates use edition 2024, Ubuntu's
   rustc is too old),
-- the dependencies from `package.xml`.
+- the dependencies of both packages (`package.xml` of `r3v_ros` and
+  `r3v_interfaces`).
 
 ```bash
 mkdir -p ~/r3v_ws/src && cd ~/r3v_ws/src
-git clone --recurse-submodules https://github.com/igorosky/r3v-ros.git r3v_ros
+git clone --recurse-submodules https://github.com/igorosky/r3v-ros.git
 cd ~/r3v_ws
 rosdep install --from-paths src --ignore-src -y
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
 
-The Rust crates are built from the `r3v-voxelizer` and `r3v-renderer`
-submodules by cargo during the CMake build (`cmake/r3v_rust.cmake`, with
+The Rust crates are built from the `r3v_ros/r3v-voxelizer` and
+`r3v_ros/r3v-renderer` submodules by cargo during the CMake build
+(`r3v_ros/cmake/r3v_rust.cmake`, with
 `--locked`). `-DR3V_CARGO_TARGET_DIR=<dir>` keeps the cargo target directory
-between clean builds.
+between clean builds. `colcon build --packages-select r3v_interfaces` builds
+the messages alone, without Rust.
 
 ## Code style and tests
 
-C++ code is checked with cpplint ([CPPLINT.cfg](../CPPLINT.cfg)) and
-uncrustify ([uncrustify.cfg](../uncrustify.cfg)). The voxel stream payload, the
+C++ code is checked with cpplint ([CPPLINT.cfg](../r3v_ros/CPPLINT.cfg)) and
+uncrustify ([uncrustify.cfg](../r3v_ros/uncrustify.cfg)). The voxel stream payload, the
 voxel map and the downsampled output of r3v-voxelizer have unit tests
-([test](../test), no GPU needed). All of them run as tests:
+([test](../r3v_ros/test), no GPU needed). All of them run as tests:
 
 ```bash
 colcon test --packages-select r3v_ros && colcon test-result --verbose
 ```
 
-Or the linters directly, from the repository root:
+Or the linters directly, from the `r3v_ros` directory:
 
 ```bash
 ament_cpplint src include test

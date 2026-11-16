@@ -145,6 +145,11 @@ if(BUILD_TESTING)
   target_compile_options(test_voxelizer_node PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
   ament_target_dependencies(test_voxelizer_node r3v_interfaces rclcpp)
   target_link_libraries(test_voxelizer_node r3v_voxelizer_component)
+  # The throttled stream of the voxelizer node, fed with point clouds.
+  ament_add_gtest(test_throttled_stream test/test_throttled_stream.cpp TIMEOUT 120)
+  target_compile_options(test_throttled_stream PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
+  ament_target_dependencies(test_throttled_stream r3v_interfaces rclcpp sensor_msgs std_msgs)
+  target_link_libraries(test_throttled_stream r3v_voxelizer_component)
   # The renderer node's grids; its node renders nothing, no GPU.
   ament_add_gtest(test_grids test/test_grids.cpp TIMEOUT 60)
   target_compile_options(test_grids PRIVATE ${R3V_ROS_COMPILE_OPTIONS})

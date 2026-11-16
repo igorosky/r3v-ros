@@ -34,7 +34,8 @@ namespace r3v_ros {
 // Builds a voxel map from any number of point clouds and publishes it on the
 // voxel stream (see docs/voxel-stream.md), which renderer nodes follow. A
 // second stream carries the downsampled map, worked out only while someone
-// follows it.
+// follows it, and a third one the same map throttled: while the throttle is
+// on, the blocks changed meanwhile go out together at its rate.
 //
 // Needs a multi-threaded executor: point clouds wait for TF, which arrives
 // on another callback group.
@@ -61,6 +62,12 @@ private:
     uint32_t voxel_size;  // edge of a downsampled voxel, in voxels
     uint32_t threshold;  // constructed voxels of its cube that make it present
   };
+  // Rate of the throttled stream's blocks. Changing it at runtime keeps the
+  // stream going.
+  struct ThrottleSettings {
+    bool enabled;
+    double rate;  // messages with blocks per second at most, while enabled
+  };
   struct Controls;
   // One voxel stream and where it stands. Voxel callback group only.
   struct Stream {
@@ -80,6 +87,7 @@ private:
     uint64_t sequence = 0;  // of the next message
     std::optional<uint64_t> last_full;  // sequence of the last FULL message
     Clock::time_point last_publish;
+    Clock::time_point last_blocks;  // of the last message with blocks, FULL or DELTA
   };
   // rv::get_all_points_compressed or rv::get_all_downsampled.
   using GetAllGroups = rv::VoxelGroups (*)(const void*);
@@ -108,7 +116,7 @@ private:
   void clearVoxels();
   // Starts the map over with a new voxelizer.
   void rebuildVoxelizer();
-  // Both streams send the whole map next.
+  // Every stream sends the whole map next.
   void restartStreams();
   // Rebuilds the voxelizer unless `settings` are the current ones. Returns
   // whether they were not.
@@ -116,18 +124,27 @@ private:
   // Multipliers of every point cloud, for the points that follow.
   void setMultipliers(const std::vector<rv::Multipliers>& multipliers);
   void setDownsampling(const DownsamplingSettings& downsampling);
+  void setThrottle(const ThrottleSettings& throttle);
   void publishSettings();
   // FULL messages for the requests of `stream` not answered yet.
   void answerSyncRequests(Stream& stream, const std::vector<msg::FullSyncRequest>& requests);
 
   // Takes the downsampled blocks changed since the last tick, or drops the
-  // downsampled state while nobody follows the downsampled stream.
+  // downsampled state while nobody follows either downsampled stream.
   void collectDownsampled();
   bool hasSubscribers(const Stream& stream) const;
+  // Whether the throttled stream may send its pending blocks now.
+  bool throttledBlocksDue() const;
+  // Whether the throttle holds blocks back longer than heartbeat_period_, so
+  // heartbeats have to go out while they wait.
+  bool throttleOutlastsHeartbeat() const;
   // Publishes the next message of `stream`, whose voxels are `resolution`
   // meters: the whole map (from `get_all`) when due, otherwise the pending
-  // blocks, or a heartbeat.
-  void publishNext(Stream& stream, double resolution, GetAllGroups get_all);
+  // blocks if `blocks_due`, or a heartbeat (while blocks wait only if
+  // `heartbeat_while_waiting`).
+  void publishNext(
+    Stream& stream, double resolution, GetAllGroups get_all, bool blocks_due = true,
+    bool heartbeat_while_waiting = true);
   void publishFull(Stream& stream, double resolution, GetAllGroups get_all);
   void publishDelta(Stream& stream, double resolution);
   // Publishes `bytes` from `data` as the next message of `stream` and
@@ -148,6 +165,7 @@ private:
   int64_t voxelizer_buckets_;
   std::string stream_topic_;
   std::string downsampled_topic_;
+  std::string throttled_topic_;
   size_t stream_depth_;
   double stream_rate_;
   double heartbeat_period_;
@@ -159,14 +177,16 @@ private:
   VoxelizerSettings settings_;
   std::vector<rv::Multipliers> cloud_multipliers_;  // of every point cloud, as cloud_configs_
   DownsamplingSettings downsampling_;
+  ThrottleSettings throttle_;
   VoxelizerPtr voxelizer_;  // NULL when making it failed, tried again every tick
   // The voxelizer may hold downsampled state, which add_points keeps up to
   // date.
   bool downsampled_tracked_ = false;
   std::vector<rv::PointF> points_;
-  uint64_t session_;  // of both streams
+  uint64_t session_;  // of every stream
   Stream full_{ "voxel map" };
   Stream downsampled_{ "downsampled voxel map" };
+  Stream throttled_{ "throttled downsampled voxel map" };
 
   // Changes from the control topics, waiting for the next tick. Settings are
   // changed field by field, so that changes arriving together all apply.
@@ -185,8 +205,11 @@ private:
     std::optional<bool> downsampling_enabled;
     std::optional<uint32_t> downsampled_voxel_size;
     std::optional<uint32_t> downsampled_threshold;
+    std::optional<bool> throttle_enabled;
+    std::optional<double> throttle_rate;
     std::vector<msg::FullSyncRequest> sync_requests;
     std::vector<msg::FullSyncRequest> downsampled_sync_requests;
+    std::vector<msg::FullSyncRequest> throttled_sync_requests;
   };
   std::mutex controls_mutex_;
   Controls controls_;
@@ -204,6 +227,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr downsampling_enabled_sub_;
   rclcpp::Subscription<std_msgs::msg::UInt32>::SharedPtr downsampled_voxel_size_sub_;
   rclcpp::Subscription<std_msgs::msg::UInt32>::SharedPtr downsampled_threshold_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr throttle_enabled_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr throttle_rate_sub_;
   // Current state of the settings above, transient local for late joiners.
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr resolution_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr destroy_threshold_pub_;
@@ -212,6 +237,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr downsampling_enabled_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr downsampled_voxel_size_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr downsampled_threshold_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr throttle_enabled_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr throttle_rate_pub_;
   // Multiplier topics of every point cloud, as cloud_configs_.
   struct MultiplierTopics {
     rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr intensity_sub;

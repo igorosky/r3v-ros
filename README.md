@@ -54,7 +54,9 @@ The repository holds two ROS packages:
   [r3v-voxelizer](https://github.com/igorosky/r3v-voxelizer). It publishes the
   map as a voxel stream: changes as they happen, the whole map on request. A
   second stream carries a downsampled, coarser copy of the map (worked out
-  only while someone follows it).
+  only while someone follows it), and a third one the same copy throttled for
+  clients on a slow link (one shared runtime setting holds its blocks back to
+  a lower rate).
 - **`r3v_renderer`** (executable `r3v_renderer_node`, component
   `r3v_ros::RendererNode`) follows the voxel stream and renders the map with
   the robot using [r3v-renderer](https://github.com/igorosky/r3v-renderer),
@@ -139,6 +141,7 @@ file works for every way of running them.
 | `/robot_description` | `std_msgs/String` | renderer | in |
 | `/r3v/voxels` | `r3v_interfaces/VoxelMapUpdate` | voxelizer to renderer | stream |
 | `/r3v/voxels_downsampled` | `r3v_interfaces/VoxelMapUpdate` | voxelizer to renderer | stream |
+| `/r3v/voxels_downsampled_throttled` | `r3v_interfaces/VoxelMapUpdate` | voxelizer to remote clients | stream |
 | `~/camera_pose` | `geometry_msgs/PoseStamped` | renderer | in |
 | `~/grids/set` | `r3v_interfaces/GridArray` | renderer | in |
 | `/r3v/image` (+ transports) | `sensor_msgs/Image` | renderer | out |
@@ -152,7 +155,7 @@ in [docs/topics.md](docs/topics.md).
 | Document | What is inside |
 |---|---|
 | [docs/topics.md](docs/topics.md) | All topics, views, runtime control, camera, enabling and disabling the renderer |
-| [docs/voxel-stream.md](docs/voxel-stream.md) | How the voxel streams (full and downsampled) and their synchronization work |
+| [docs/voxel-stream.md](docs/voxel-stream.md) | How the voxel streams (full, downsampled and throttled) and their synchronization work |
 | [docs/docker.md](docs/docker.md) | Docker image, compose, GPU access, robot meshes |
 | [docs/development.md](docs/development.md) | Building without Docker, linters, tests, CI |
 | [docs/notes.md](docs/notes.md) | Behavior details and migrating from `r3v_node` |

@@ -20,7 +20,7 @@ with their default in parentheses, or fixed names relative to the node (`~/`).
 |---|---|---|
 | `tf_topic` (`/tf`), `tf_static_topic` (`/tf_static`) | `tf2_msgs/TFMessage` | in |
 | `point_clouds.<name>.topic` | `sensor_msgs/PointCloud2` | in |
-| `~/request_full_sync`, `~/downsampled/request_full_sync` | `r3v_interfaces/FullSyncRequest` | in |
+| `~/request_full_sync`, `~/downsampled/request_full_sync`, `~/throttled/request_full_sync` | `r3v_interfaces/FullSyncRequest` | in |
 | `~/clear_voxels` | `std_msgs/Empty` | in |
 | `~/set_resolution` | `std_msgs/Float64` | in |
 | `~/set_destroy_threshold`, `set_construct_threshold`, `set_max_value` | `std_msgs/UInt32` | in |
@@ -28,8 +28,11 @@ with their default in parentheses, or fixed names relative to the node (`~/`).
 | `~/point_clouds/<name>/set_hit_multiplier`, `set_target_multiplier` | `std_msgs/UInt32` | in |
 | `~/downsampling/set_enabled` | `std_msgs/Bool` | in |
 | `~/downsampling/set_voxel_size`, `set_threshold` | `std_msgs/UInt32` | in |
+| `~/throttle/set_enabled` | `std_msgs/Bool` | in |
+| `~/throttle/set_rate` | `std_msgs/Float64` | in |
 | `voxel_stream.topic` (`/r3v/voxels`) | `r3v_interfaces/VoxelMapUpdate` (reliable) | out |
 | `voxel_stream.downsampled_topic` (`/r3v/voxels_downsampled`) | `r3v_interfaces/VoxelMapUpdate` (reliable) | out |
+| `voxel_stream.throttled_topic` (`/r3v/voxels_downsampled_throttled`) | `r3v_interfaces/VoxelMapUpdate` (reliable) | out |
 
 ## r3v_renderer
 
@@ -108,6 +111,8 @@ listed in the "Starts from" column.
 | `~/downsampling/set_enabled` | `std_msgs/Bool` | `downsampling.enabled` | Disabled, the downsampled stream carries an empty map |
 | `~/downsampling/set_voxel_size` | `std_msgs/UInt32` | `downsampling.voxel_size` | Edge of a downsampled voxel in voxels, a power of two from 2 to 128 |
 | `~/downsampling/set_threshold` | `std_msgs/UInt32` | `downsampling.threshold` | Voxels of the cube that make a downsampled voxel, from 1 to `voxel_size`^3 |
+| `~/throttle/set_enabled` | `std_msgs/Bool` | `throttle.enabled` | Whether the throttled stream holds its blocks back to `throttle.rate` |
+| `~/throttle/set_rate` | `std_msgs/Float64` | `throttle.rate` | Messages with blocks per second at most on the throttled stream while enabled, positive |
 
 `<name>` is one of `point_clouds.names`, which therefore have to be valid in
 topic names. The meaning of the thresholds, multipliers and downsampling is
@@ -121,9 +126,12 @@ empties the map in place.
 
 Multipliers only apply to the points that follow, the map stays.
 
-Downsampling changes only send the downsampled map again. Voxel size and
-threshold are checked together: set the threshold first when it would not fit
-the new size, or send both within one period.
+Downsampling changes only send the downsampled map again (on both downsampled
+streams). Voxel size and threshold are checked together: set the threshold
+first when it would not fit the new size, or send both within one period.
+
+The throttle keeps the throttled stream going, see
+[Throttled stream](voxel-stream.md#throttled-stream).
 
 ### r3v_renderer
 
@@ -191,7 +199,7 @@ of its node, for example:
   `~/colormap/get_mode`, `~/grids/get`, ...
 - `r3v_voxelizer`: `~/get_resolution`,
   `~/point_clouds/<name>/get_hit_multiplier`, `~/downsampling/get_voxel_size`,
-  ...
+  `~/throttle/get_rate`, ...
 
 They use a transient local QoS, so a late subscriber (with a transient local,
 reliable QoS too) gets the current state.

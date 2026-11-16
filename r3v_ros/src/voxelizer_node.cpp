@@ -71,6 +71,9 @@ VoxelizerNode::VoxelizerNode(const rclcpp::NodeOptions& options)
     PRIu32, downsampled_.pub->get_topic_name(), compressionName(downsampled_.compression),
     downsampling_.enabled ? "enabled" : "disabled", downsampling_.voxel_size,
     downsampling_.threshold);
+  RCLCPP_INFO(
+    get_logger(), "Throttled downsampled voxel map on '%s': throttle %s, %g Hz",
+    throttled_.pub->get_topic_name(), throttle_.enabled ? "on" : "off", throttle_.rate);
 }
 
 void VoxelizerNode::declareParameters() {
@@ -84,6 +87,8 @@ void VoxelizerNode::declareParameters() {
   stream_topic_ = declare_parameter<std::string>("voxel_stream.topic", "/r3v/voxels");
   downsampled_topic_ = declare_parameter<std::string>(
     "voxel_stream.downsampled_topic", "/r3v/voxels_downsampled");
+  throttled_topic_ = declare_parameter<std::string>(
+    "voxel_stream.throttled_topic", "/r3v/voxels_downsampled_throttled");
   const int64_t depth = declare_parameter<int64_t>("voxel_stream.depth", 100);
   stream_rate_ = declare_parameter<double>("voxel_stream.rate", 15.0);
   const std::string compression =
@@ -100,6 +105,11 @@ void VoxelizerNode::declareParameters() {
   require(
     downsampled_topic_ != stream_topic_,
     "voxel_stream.downsampled_topic must differ from voxel_stream.topic");
+  require(!throttled_topic_.empty(), "voxel_stream.throttled_topic must not be empty");
+  require(
+    throttled_topic_ != stream_topic_ && throttled_topic_ != downsampled_topic_,
+    "voxel_stream.throttled_topic must differ from voxel_stream.topic and "
+    "voxel_stream.downsampled_topic");
   require(depth >= 1 && depth <= 100000, "voxel_stream.depth must be between 1 and 100000");
   require(stream_rate_ > 0.0, "voxel_stream.rate must be positive");
   const std::optional<uint8_t> full_compression = parseCompression(compression);
@@ -123,6 +133,9 @@ void VoxelizerNode::declareParameters() {
   full_.compression_level = static_cast<int>(level);
   downsampled_.compression = *downsampled_kind;
   downsampled_.compression_level = static_cast<int>(downsampled_level);
+  // The throttled stream carries the downsampled map, compressed alike.
+  throttled_.compression = downsampled_.compression;
+  throttled_.compression_level = downsampled_.compression_level;
 
   settings_.resolution = declare_parameter<double>("voxelizer.resolution", 0.1);
   require(
@@ -155,6 +168,11 @@ void VoxelizerNode::declareParameters() {
     "downsampling.voxel_size must be a power of two from 2 to " +
     std::to_string(kMaxDownsampledVoxelSize) +
     " and downsampling.threshold between 1 and voxel_size^3");
+
+  throttle_.enabled = declare_parameter<bool>("throttle.enabled", false);
+  throttle_.rate = declare_parameter<double>("throttle.rate", 1.0);
+  require(
+    validPositiveFloat(throttle_.rate), "throttle.rate must be positive and fit in a float");
 
   const auto names = declare_parameter<std::vector<std::string>>(
     "point_clouds.names", std::vector<std::string>{ });
@@ -271,6 +289,9 @@ void VoxelizerNode::createInterfaces() {
   createStream(
     downsampled_, downsampled_topic_, "~/downsampled/request_full_sync",
     &Controls::downsampled_sync_requests, control_options);
+  createStream(
+    throttled_, throttled_topic_, "~/throttled/request_full_sync",
+    &Controls::throttled_sync_requests, control_options);
   tick_timer_ = create_wall_timer(
     std::chrono::duration<double>(1.0 / stream_rate_), [this]() { onTick(); }, voxel_group_);
 }
@@ -291,6 +312,7 @@ void VoxelizerNode::createStream(
   options.use_intra_process_comm = rclcpp::IntraProcessSetting::Enable;
   stream.pub = create_publisher<VoxelMapUpdate>(topic, voxelStreamQos(stream_depth_), options);
   stream.last_publish = Clock::now();
+  stream.last_blocks = stream.last_publish;
 }
 
 void VoxelizerNode::createSettingInterfaces(const rclcpp::SubscriptionOptions& options) {
@@ -345,6 +367,16 @@ void VoxelizerNode::createSettingInterfaces(const rclcpp::SubscriptionOptions& o
   downsampled_threshold_sub_ = u32_setter(
     "~/downsampling/set_threshold",
     [](Controls& controls, uint32_t value) { controls.downsampled_threshold = value; });
+  throttle_enabled_sub_ = create_subscription<std_msgs::msg::Bool>(
+    "~/throttle/set_enabled", rclcpp::QoS(10),
+    [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+      std::lock_guard<std::mutex> lock(controls_mutex_);
+      controls_.throttle_enabled = msg->data;
+    }, options);
+  throttle_rate_sub_ = float_setter(
+    "~/throttle/set_rate", "throttle rate", validPositiveFloat,
+    "must be positive and fit in a float",
+    [](Controls& controls, double value) { controls.throttle_rate = value; });
 
   const rclcpp::QoS state_qos = rclcpp::QoS(1).reliable().transient_local();
   resolution_pub_ = create_publisher<std_msgs::msg::Float64>("~/get_resolution", state_qos);
@@ -359,6 +391,8 @@ void VoxelizerNode::createSettingInterfaces(const rclcpp::SubscriptionOptions& o
     create_publisher<std_msgs::msg::UInt32>("~/downsampling/get_voxel_size", state_qos);
   downsampled_threshold_pub_ =
     create_publisher<std_msgs::msg::UInt32>("~/downsampling/get_threshold", state_qos);
+  throttle_enabled_pub_ = create_publisher<std_msgs::msg::Bool>("~/throttle/get_enabled", state_qos);
+  throttle_rate_pub_ = create_publisher<std_msgs::msg::Float64>("~/throttle/get_rate", state_qos);
 
   for (size_t index = 0; index < cloud_configs_.size(); ++index) {
     const std::string& name = cloud_configs_[index].name;
@@ -477,6 +511,9 @@ void VoxelizerNode::onTick() {
   publishNext(full_, settings_.resolution, rv::get_all_points_compressed);
   collectDownsampled();
   publishNext(downsampled_, downsampledResolution(), rv::get_all_downsampled);
+  publishNext(
+    throttled_, downsampledResolution(), rv::get_all_downsampled, throttledBlocksDue(),
+    throttleOutlastsHeartbeat());
 }
 
 void VoxelizerNode::applyControls() {
@@ -512,8 +549,14 @@ void VoxelizerNode::applyControls() {
   downsampling.threshold = controls.downsampled_threshold.value_or(downsampling.threshold);
   setDownsampling(downsampling);
 
+  ThrottleSettings throttle = throttle_;
+  throttle.enabled = controls.throttle_enabled.value_or(throttle.enabled);
+  throttle.rate = controls.throttle_rate.value_or(throttle.rate);
+  setThrottle(throttle);
+
   answerSyncRequests(full_, controls.sync_requests);
   answerSyncRequests(downsampled_, controls.downsampled_sync_requests);
+  answerSyncRequests(throttled_, controls.throttled_sync_requests);
 }
 
 void VoxelizerNode::answerSyncRequests(
@@ -533,7 +576,7 @@ void VoxelizerNode::answerSyncRequests(
 }
 
 void VoxelizerNode::restartStreams() {
-  for (Stream* stream : { &full_, &downsampled_ }) {
+  for (Stream* stream : { &full_, &downsampled_, &throttled_ }) {
     stream->pending.clear();
     stream->full_pending = true;
   }
@@ -630,13 +673,28 @@ void VoxelizerNode::setDownsampling(const DownsamplingSettings& downsampling) {
   downsampled_tracked_ = false;
   // The downsampled state is dropped: followers get the whole downsampled
   // map at its new size, an empty one when disabled. The voxel map stays.
-  downsampled_.pending.clear();
-  downsampled_.full_pending = true;
+  for (Stream* stream : { &downsampled_, &throttled_ }) {
+    stream->pending.clear();
+    stream->full_pending = true;
+  }
   publishSettings();
   RCLCPP_INFO(
     get_logger(), "Downsampling %s: voxel size %" PRIu32 " (%g m), threshold %" PRIu32,
     downsampling.enabled ? "enabled" : "disabled", downsampling.voxel_size,
     downsampledResolution(), downsampling.threshold);
+}
+
+void VoxelizerNode::setThrottle(const ThrottleSettings& throttle) {
+  if (throttle.enabled == throttle_.enabled && throttle.rate == throttle_.rate) {
+    return;
+  }
+  // The blocks pending stay: they go out at the new rate, or with the next
+  // tick when it is off.
+  throttle_ = throttle;
+  publishSettings();
+  RCLCPP_INFO(
+    get_logger(), "Throttle of '%s' %s, %g Hz", throttled_.pub->get_topic_name(),
+    throttle.enabled ? "on" : "off", throttle.rate);
 }
 
 void VoxelizerNode::publishSettings() {
@@ -657,6 +715,10 @@ void VoxelizerNode::publishSettings() {
   downsampled_voxel_size_pub_->publish(u32);
   u32.data = downsampling_.threshold;
   downsampled_threshold_pub_->publish(u32);
+  flag.data = throttle_.enabled;
+  throttle_enabled_pub_->publish(flag);
+  f64.data = throttle_.rate;
+  throttle_rate_pub_->publish(f64);
   for (size_t index = 0; index < multiplier_topics_.size(); ++index) {
     const rv::Multipliers& m = cloud_multipliers_[index];
     const MultiplierTopics& topics = multiplier_topics_[index];
@@ -670,7 +732,7 @@ void VoxelizerNode::publishSettings() {
 }
 
 void VoxelizerNode::collectDownsampled() {
-  if (!hasSubscribers(downsampled_)) {
+  if (!hasSubscribers(downsampled_) && !hasSubscribers(throttled_)) {
     if (downsampled_tracked_) {
       // Spares add_points the downsampling work while nobody follows. The
       // settings stay, get_downsampled builds the state again.
@@ -687,9 +749,14 @@ void VoxelizerNode::collectDownsampled() {
   // Empty while downsampling is disabled.
   const OwnedUpdate update(rv::get_downsampled(voxelizer_.get()));
   downsampled_tracked_ = downsampling_.enabled;
+  // Both streams get every block; one without subscribers drops them when
+  // publishing. The last mask of a block wins, so the throttled stream sends
+  // each changed block once however many ticks it waits.
   for (size_t i = 0; i < update->len; ++i) {
     const rv::PointI& block = update->data[i];
-    downsampled_.pending[VoxelKey{ block.x, block.y, block.z }] = block.i;
+    const VoxelKey key{ block.x, block.y, block.z };
+    downsampled_.pending[key] = block.i;
+    throttled_.pending[key] = block.i;
   }
 }
 
@@ -698,7 +765,23 @@ bool VoxelizerNode::hasSubscribers(const Stream& stream) const {
          stream.pub->get_intra_process_subscription_count() > 0;
 }
 
-void VoxelizerNode::publishNext(Stream& stream, double resolution, GetAllGroups get_all) {
+bool VoxelizerNode::throttledBlocksDue() const {
+  if (!throttle_.enabled) {
+    return true;
+  }
+  // Ticks come every 1 / voxel_stream.rate; half a tick of slack keeps a rate
+  // that divides it from slipping to the tick after.
+  const double period = 1.0 / throttle_.rate - 0.5 / stream_rate_;
+  return Clock::now() - throttled_.last_blocks >= std::chrono::duration<double>(period);
+}
+
+bool VoxelizerNode::throttleOutlastsHeartbeat() const {
+  return throttle_.enabled && 1.0 / throttle_.rate > heartbeat_period_;
+}
+
+void VoxelizerNode::publishNext(
+  Stream& stream, double resolution, GetAllGroups get_all, bool blocks_due,
+  bool heartbeat_while_waiting) {
   try {
     if (!hasSubscribers(stream)) {
       // Nobody to keep in sync. Whoever subscribes next starts from the
@@ -707,14 +790,20 @@ void VoxelizerNode::publishNext(Stream& stream, double resolution, GetAllGroups 
       stream.full_pending = true;
       return;
     }
+    // Renderers that just subscribed learn the sequence to ask for a FULL
+    // message from, and a restart of this node. Throttled blocks stay
+    // pending; while they wait no longer than a heartbeat period, their DELTA
+    // does its job.
+    const bool heartbeat_due =
+      (stream.pending.empty() || heartbeat_while_waiting) &&
+      Clock::now() - stream.last_publish >= std::chrono::duration<double>(heartbeat_period_);
+    // A FULL message is never held back: renderers wait for it to show
+    // anything.
     if (stream.full_pending) {
       publishFull(stream, resolution, get_all);
-    } else if (!stream.pending.empty()) {
+    } else if (blocks_due && !stream.pending.empty()) {
       publishDelta(stream, resolution);
-    } else if (Clock::now() - stream.last_publish >=
-      std::chrono::duration<double>(heartbeat_period_)) {
-      // Renderers that just subscribed learn the sequence to ask for a FULL
-      // message from, and a restart of this node.
+    } else if (heartbeat_due) {
       publishUpdate(stream, VoxelMapUpdate::DELTA, nullptr, 0, resolution);
     }
   } catch (const std::exception& e) {
@@ -732,6 +821,7 @@ void VoxelizerNode::publishFull(Stream& stream, double resolution, GetAllGroups 
     stream, VoxelMapUpdate::FULL, groups->data, groups->len * sizeof(WireGroup), resolution);
   // It holds every block changed so far.
   stream.last_full = sequence;
+  stream.last_blocks = stream.last_publish;
   stream.pending.clear();
   stream.full_pending = false;
   RCLCPP_INFO(
@@ -747,6 +837,7 @@ void VoxelizerNode::publishDelta(Stream& stream, double resolution) {
   }
   publishUpdate(
     stream, VoxelMapUpdate::DELTA, blocks.data(), blocks.size() * sizeof(WireBlock), resolution);
+  stream.last_blocks = stream.last_publish;
   stream.pending.clear();
 }
 

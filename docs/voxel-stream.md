@@ -8,7 +8,9 @@ order (keep last `voxel_stream.depth`, volatile). Changes and the whole map go
 on the same topic, so a renderer never has to line the two up.
 
 A second stream on `voxel_stream.downsampled_topic` carries a coarser copy of
-the map, see [Downsampled stream](#downsampled-stream). Both work the same way.
+the map, see [Downsampled stream](#downsampled-stream), and a third one on
+`voxel_stream.throttled_topic` the same coarse copy at a rate clients can
+lower, see [Throttled stream](#throttled-stream). All work the same way.
 
 ## Messages
 
@@ -86,3 +88,34 @@ is there while at least `downsampling.threshold` of them are.
   only. Disabled, it carries an empty map.
 
 A client can follow either stream or both.
+
+## Throttled stream
+
+`voxel_stream.throttled_topic` (`/r3v/voxels_downsampled_throttled`) carries
+the downsampled map again, for clients on a slow link (the web app's Rover
+Visualization Lite follows it). One throttle, shared by every client, sets how
+often its blocks go out:
+
+- Off (`throttle.enabled: false`, the default), it carries the same messages
+  as the downsampled stream, tick by tick.
+- On, a DELTA with blocks goes out at most `throttle.rate` times a second
+  (default 1 Hz, rounded to the ticks of `voxel_stream.rate`, which also caps
+  it). The blocks changed meanwhile wait and go out together; a block changed
+  several times goes once, with its last mask. FULL messages are never held
+  back: a client asking for the map gets it at the next tick. Heartbeats keep
+  their period, so a client that just subscribed learns a sequence to ask
+  from within `voxel_stream.heartbeat_period`; while blocks wait, one goes out
+  only when the throttle period is longer than that (below 1 Hz by default),
+  otherwise the DELTA with the blocks comes first.
+
+Same messages and synchronization as above, with its own `sequence` and
+request topic (`~/throttled/request_full_sync`), the session of the other two,
+and the downsampled stream's compression. Every reset of the downsampled
+stream (clear, voxelizer or downsampling settings) resets it too. The
+downsampled state is worked out while either downsampled stream has
+subscribers.
+
+`~/throttle/set_enabled` (`std_msgs/Bool`) and `~/throttle/set_rate`
+(`std_msgs/Float64`, Hz, positive) change the throttle at runtime, the latched
+`~/throttle/get_enabled` and `~/throttle/get_rate` hold the current one. The
+parameters give it at startup; changes are not kept over a restart.

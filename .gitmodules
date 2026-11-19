@@ -6,3 +6,7 @@
 	path = r3v_ros/r3v-renderer
 	url = https://github.com/igorosky/r3v-renderer.git
 	branch = master
+[submodule "r3v_interfaces"]
+	path = r3v_interfaces
+	url = https://github.com/igorosky/r3v_interfaces.git
+	branch = master

@@ -503,6 +503,7 @@ void RendererNode::deactivateView(View& view) {
   unsubscribeStream(view);
   view.map.clear();
   replaceTesselated(view, { });
+  view.shown = false;
   view.rendered_stamp.reset();
   view.active = false;
   RCLCPP_INFO(get_logger(), "Stopped rendering the %s", view.name);
@@ -775,15 +776,31 @@ void RendererNode::flushVoxels(View& view) {
       configureTesselator(view);
     }
     view.map.replace(std::move(*pending.full));
-    if (view.voxels_visible) {
+    if (view.shown) {
       replaceTesselated(view, view.map.groups());
     }
   }
   if (!pending.blocks.empty()) {
     view.map.apply(pending.blocks);
-    if (view.voxels_visible) {
+    if (view.shown) {
       tesselate(view, pending.blocks);
     }
+  }
+}
+
+void RendererNode::setShown(View& view, bool shown) {
+  if (shown == view.shown) {
+    return;
+  }
+  view.shown = shown;
+  if (shown) {
+    replaceTesselated(view, view.map.groups());
+    RCLCPP_INFO(
+      get_logger(), "Tesselating the %s: %zu groups", view.name, view.map.groups().size());
+  } else {
+    // Frees their memory too, which is the CPU's on a Jetson.
+    replaceTesselated(view, { });
+    RCLCPP_INFO(get_logger(), "Not tesselating the %s: hidden or not followed", view.name);
   }
 }
 
@@ -847,15 +864,8 @@ void RendererNode::setVoxelsVisible(View& view, bool visible) {
     return;
   }
   view.voxels_visible = visible;
-  // Point clouds keep building the map while it is hidden. A view that is
-  // not active has no voxels to show or hide.
-  if (view.active) {
-    if (visible) {
-      replaceTesselated(view, view.map.groups());
-    } else {
-      replaceTesselated(view, { });
-    }
-  }
+  // Point clouds keep building the map while it is hidden. onRender() shows
+  // or hides it right after the controls.
   RCLCPP_INFO(get_logger(), "%s the %s", visible ? "Showing" : "Hiding", view.name);
 }
 
@@ -1039,10 +1049,26 @@ void RendererNode::onRender() {
     const auto t0 = Clock::now();
     applyControls();
     bool any_active = false;
-    for (View& view : views_) {
-      if (view.active) {
-        flushVoxels(view);
-        any_active = true;
+    std::array<bool, 2> followed{ };
+    for (size_t index = 0; index < views_.size(); ++index) {
+      View& view = views_[index];
+      if (!view.active) {
+        continue;
+      }
+      any_active = true;
+      // A lazy view nobody follows keeps only the map. The voxel stream keeps
+      // changing it, and tesselating and uploading every change for no frame
+      // would be wasted.
+      followed[index] = !lazy_ || view.image_pub.getNumSubscribers() > 0;
+      const bool show = followed[index] && view.voxels_visible;
+      // Hidden before the voxels come in and shown after, so that either way
+      // they are tesselated at most once.
+      if (!show) {
+        setShown(view, false);
+      }
+      flushVoxels(view);
+      if (show) {
+        setShown(view, true);
       }
     }
     if (!any_active) {
@@ -1060,7 +1086,7 @@ void RendererNode::onRender() {
       if (!view.active) {
         continue;
       }
-      if (lazy_ && view.image_pub.getNumSubscribers() == 0) {
+      if (!followed[index]) {
         // The frame the renderer holds gets stale; never publish it later.
         view.rendered_stamp.reset();
         continue;

@@ -70,7 +70,9 @@ The renderer has two views: the full voxel map (`voxel_stream.topic` to
 says which of them run. Both show the same camera, robot and colormap.
 
 A view that runs follows its voxel stream and, with `output.lazy`, renders
-only while its image topic has subscribers. Each view has its own GPU
+only while its image topic has subscribers. Without them it keeps its voxel
+map but does not tesselate it (its renderer holds no voxels then); the first
+subscriber gets the whole map tesselated at once. Each view has its own GPU
 renderer, made the first time the view runs and kept until exit, so switching
 back is quick. A view that stops forgets its voxel map and gets it again from
 the voxelizer when it runs again.
@@ -198,8 +200,9 @@ reliable QoS too) gets the current state.
 
 ## Output
 
-- With `output.lazy` (default) a view renders nothing while nobody subscribes
-  to its image topic.
+- With `output.lazy` (default) a view renders and tesselates nothing while
+  nobody subscribes to its image topic. It keeps its voxel map up to date and
+  tesselates all of it when someone subscribes again.
 - Frames are stamped with the time their scene was sampled.
 - The renderer reads frames back one call late, so images lag one period
   (`1 / rate`).

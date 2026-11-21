@@ -150,6 +150,12 @@ if(BUILD_TESTING)
   target_compile_options(test_grids PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
   ament_target_dependencies(test_grids r3v_interfaces rclcpp)
   target_link_libraries(test_grids r3v_renderer_component)
+  # The renderer node's lazy view, rendering on a GPU (lavapipe works); skips
+  # without one.
+  ament_add_gtest(test_renderer_node test/test_renderer_node.cpp TIMEOUT 120)
+  target_compile_options(test_renderer_node PRIVATE ${R3V_ROS_COMPILE_OPTIONS})
+  ament_target_dependencies(test_renderer_node r3v_interfaces rclcpp sensor_msgs std_msgs)
+  target_link_libraries(test_renderer_node r3v_renderer_component)
 endif()
 
 ament_package()

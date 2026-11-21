@@ -92,6 +92,9 @@ private:
     // Render callback group only.
     bool active = false;  // enabled and picked by the mode
     bool voxels_visible = true;
+    // The tesselator and the renderer hold `map`: its voxels are visible and
+    // someone follows the image (see onRender()). Otherwise they hold nothing.
+    bool shown = false;
     // NULL until the view is first active, kept from then on.
     RendererPtr renderer;
     TesselatorPtr tesselator;
@@ -152,9 +155,12 @@ private:
   // Asks the voxelizer for a FULL message. Needs stream_mutex_.
   void requestFullSync(View& view);
   bool cameraView(CameraView& view) const;
-  // Hands what the voxel stream queued since the last frame to the
-  // tesselator.
+  // Applies what the voxel stream queued since the last frame to the map,
+  // and to the tesselator while the view is shown.
   void flushVoxels(View& view);
+  // Tesselates and uploads the whole map, or drops every voxel the
+  // tesselator and the renderer hold.
+  void setShown(View& view, bool shown);
   void tesselate(View& view, const std::vector<WireBlock>& blocks);
   // Replaces every voxel the tesselator holds with `groups` and uploads it.
   void replaceTesselated(View& view, const std::vector<WireGroup>& groups);

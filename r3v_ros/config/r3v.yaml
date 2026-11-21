@@ -178,6 +178,8 @@
       # Header frame_id of the images; empty means fixed_frame.
       frame_id: ""
       # Only render while someone subscribes (each image topic on its own).
+      # Meanwhile the voxel map is kept but not tesselated, and tesselated as a
+      # whole for the first subscriber.
       lazy: true
       # Opaque background, sRGB red, green and blue between 0 and 1.
       # ~/background/set_color (std_msgs/ColorRGBA, alpha ignored) changes it

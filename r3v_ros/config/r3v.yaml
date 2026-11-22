@@ -45,6 +45,9 @@
       # Seconds without a message after which an empty one goes out, so that
       # renderers notice a restart and can ask for the whole map.
       heartbeat_period: 1.0
+      # The downsampled map again, throttled (throttle below), compressed as
+      # the downsampled stream.
+      throttled_topic: /r3v/voxels_downsampled_throttled
 
     voxelizer:
       # single_threaded, multi_threaded or wgpu (GPU compute).
@@ -89,6 +92,21 @@
       voxel_size: 4
       # From 1 to voxel_size^3.
       threshold: 1
+
+    # Rate of the throttled stream (voxel_stream.throttled_topic), for clients
+    # on a slow link; one setting for all of them. Off, it carries every
+    # message of the downsampled stream. On (the default), a message with
+    # blocks goes out at most rate times a second (rounded to
+    # voxel_stream.rate ticks, which also cap it) with every block changed
+    # meanwhile; FULL messages are not held back, heartbeats keep
+    # voxel_stream.heartbeat_period (while blocks wait only when 1 / rate is
+    # longer). Changes at runtime through
+    # ~/throttle/set_enabled (std_msgs/Bool) and ~/throttle/set_rate
+    # (std_msgs/Float64, positive), ~/throttle/get_<name> holds the current
+    # one; not kept over a restart.
+    throttle:
+      enabled: true
+      rate: 1.0
 
     point_clouds:
       # Any number of sensor_msgs/PointCloud2 inputs, each configured under
